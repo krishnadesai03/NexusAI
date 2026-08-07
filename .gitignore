@@ -1,0 +1,17 @@
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+.env
+scripts/_performance_seed_state.json
+scripts/_bitbucket_clone/
+
+# IDE / OS cruft
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# personal files
+learnings.md

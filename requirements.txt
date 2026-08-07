@@ -1,0 +1,15 @@
+# Generated for tooling/CI that expects a requirements.txt.
+# pyproject.toml is the source of truth for dependencies — update there first,
+# then regenerate this file (pip install -e ".[dev]" && pip freeze).
+
+pydantic==2.13.4
+openai==2.52.0
+asyncpg==0.31.0
+pgvector==0.5.0
+langchain-text-splitters==1.1.2
+httpx==0.28.1
+mcp==2.0.0
+
+# dev / test-only
+pytest==9.1.1
+pytest-asyncio==1.4.0
