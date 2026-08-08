@@ -1,0 +1,17 @@
+FAQ — IT Helpdesk
+
+Q: How do I reset my password?
+A: Use the self-service portal at reset.alderbrooksystems.example, or contact
+   it-helpdesk@alderbrooksystems.example if locked out.
+
+Q: My VPN won't connect, what do I do?
+A: Confirm you're on the latest VPN client version (check the #it-helpdesk pinned post), then
+   restart the client. If it persists, file a ticket with the error code shown.
+
+Q: How do I request new software?
+A: Submit a request via the IT Service Catalog; approval SLA is 2 business days for standard
+   software, longer for anything requiring security review.
+
+Q: What do I do if my laptop is lost or stolen?
+A: Report immediately to it-helpdesk@alderbrooksystems.example so it can be remotely wiped; also
+   file a report with your manager within 24 hours.
