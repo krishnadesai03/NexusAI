@@ -142,18 +142,82 @@ enough to catch everything — there's no second door it could have gone through
 - So instead we used a plain, fixed set of rules that scans the query's text for
   change-related words — the same real protection, but instant, free, and nothing left to guessing.
 
+## Helper #4: The Messenger (Communication Agent)
+
+- This helper can actually send a real Slack message or a real email on your behalf.
+- Every helper before this one only ever *answered questions* — the worst thing it could do
+  was give a wrong answer. This one can *do something real*, which is a different, bigger risk:
+  a wrong destination isn't harmless the way a wrong answer is.
+- So the guardrail here is different in kind, not just degree: **the AI is never allowed to
+  choose where a message goes at all.** Slack always goes to one fixed, pre-approved channel.
+  Email always goes to one fixed, pre-approved address — with one narrow exception below. The
+  AI only ever controls *what the message says*, never *who receives it*.
+- We deliberately did not add a "please confirm before sending" step yet. Since the destination
+  is already locked down to safe test targets, an unconfirmed send can only ever reach us —
+  so a confirmation step would add complexity without adding real safety, for now.
+
+## Letting It Reach Specific (Safe) People By Name
+
+- We wanted to be able to say "email Priya Nair" and have it actually reach her test inbox,
+  not just a single generic default address.
+- The fix keeps the same safety idea intact: the AI can only supply a short name tag (like
+  "priyanair"), never a real address. Our own code — not the AI — turns that tag into an actual
+  address, by attaching it to the *same* real, already-approved mailbox this agent sends from.
+- That means every address it could ever possibly construct is still a variant of the one real
+  inbox we already trust — never a genuinely different person's real address.
+- If asked to email someone who isn't one of the four known test people, it correctly says it
+  can't, instead of guessing a name tag that might land somewhere unintended.
+
+## Giving It Memory
+
+- Until now, every single question was answered as if it were the very first thing ever asked
+  — nothing about earlier questions in the same conversation was remembered at all.
+- That meant an obvious follow-up like "what about Marcus Chen?" (right after asking about
+  someone else's salary) had no way to know what you actually meant.
+- The fix: the traffic cop now keeps a short running record of the last 5 exchanges — who asked
+  what, and which helper answered with what — and hands that record to whichever helper(s)
+  answer the current question.
+- This record only lives for as long as the program keeps running. Close it, and it's gone —
+  it doesn't get saved anywhere permanent yet.
+- It had to live with the traffic cop, not inside any one helper, because a follow-up question
+  can easily get sent to a completely different helper than the one before it — if each helper
+  only remembered its own past, that continuity would break the moment routing switched.
+
+## Making It Ask Before It Acts
+
+- The messenger helper used to send the moment it decided to — no pause, no check-in.
+- Now, instead of actually sending anything, it first shows you exactly what it's about to send
+  and stops. Nothing goes out yet.
+- You're then given exactly three choices — Send it, Edit, or Cancel — not a text box where you
+  have to phrase your answer just right.
+- Choosing Send or Cancel doesn't involve the AI at all at that point — it's a plain, direct,
+  guaranteed decision, not something being interpreted or guessed at.
+- Choosing Edit lets you describe a change, and the helper drafts a new version and shows you
+  the same three choices again — so you can revise something more than once before deciding.
+- We deliberately didn't build this as "type yes to confirm," because free text is fuzzy — a
+  perfectly reasonable reply like "sure, go ahead" might not match whatever exact words the
+  system was expecting. Three fixed choices remove that guesswork entirely.
+- This only applies to the messenger helper, since it's the only one that actually *does*
+  something in the real world. The other three only ever answer questions, so there's nothing
+  for them to pause and check with you about.
+
 ## What's Done So Far
 
 - The traffic cop that routes questions to the right helper — working and tested.
 - The document reader helper — working and tested with real company-style documents.
 - The work activity reader helper — working and tested with the pretend company's data.
 - The database reader helper — working and tested with a pretend company database.
-- All three helpers give honest answers and admit when they don't know something.
+- The messenger helper — working and tested with a real Slack workspace and real email, and now
+  always pauses for your confirmation before it actually sends anything.
+- All four helpers give honest answers and admit when they don't know something, and the
+  messenger never sends anywhere it isn't explicitly allowed to.
+- The whole system now remembers the last few exchanges of a conversation, so follow-up
+  questions actually work.
 
 ## What's Left To Build
 
-- One more helper hasn't been built yet — for sending messages (like Slack or email).
 - There's no automatic way yet to catch every mistake — most problems so far were found by
   manually asking tricky questions and checking the answers by hand.
 - A simple website interface hasn't been built yet — right now it only works through a
   typed chat window.
+- Memory doesn't survive closing the program yet — it only lasts for one running session.

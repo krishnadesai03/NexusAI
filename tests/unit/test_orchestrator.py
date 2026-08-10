@@ -9,16 +9,20 @@ from enterprise_ai.orchestrator.schemas import RoutingDecision
 class FakeLLMClient:
     def __init__(self, decision: RoutingDecision):
         self._decision = decision
+        self.user_prompts: list[str] = []
 
     async def get_structured_output(self, *, system_prompt, user_prompt, schema):
+        self.user_prompts.append(user_prompt)
         return self._decision
 
 
 class FakeAgent:
     def __init__(self, name: str):
         self._name = name
+        self.received_history: list[list[dict] | None] = []
 
-    async def handle(self, user_request: str) -> AgentResult:
+    async def handle(self, user_request: str, history: list[dict] | None = None) -> AgentResult:
+        self.received_history.append(history)
         return AgentResult(agent_name=self._name, content=f"{self._name} handled it")
 
 
@@ -45,3 +49,39 @@ async def test_orchestrator_fans_out_to_multiple_agents():
     assert set(result.routed_to) == {"database", "knowledge"}
     assert result.results["database"].content == "database handled it"
     assert result.results["knowledge"].content == "knowledge handled it"
+
+
+async def test_second_turn_receives_first_turns_history():
+    decision = RoutingDecision(agents=["knowledge"], reasoning="docs question")
+    llm = FakeLLMClient(decision)
+    agents = _all_stub_agents()
+    orchestrator = Orchestrator(router=Router(llm), agents=agents)
+
+    await orchestrator.handle("What's our PTO policy?")
+    await orchestrator.handle("And what about sick leave?")
+
+    knowledge_agent = agents["knowledge"]
+    assert knowledge_agent.received_history[0] in (None, [])
+    second_call_history = knowledge_agent.received_history[1]
+    assert second_call_history == [
+        {"role": "user", "content": "What's our PTO policy?"},
+        {"role": "assistant", "content": "knowledge: knowledge handled it"},
+    ]
+    # the router's second call should also have seen the first turn's summary
+    assert "What's our PTO policy?" in llm.user_prompts[1]
+
+
+async def test_memory_window_keeps_only_last_five_turns():
+    decision = RoutingDecision(agents=["knowledge"], reasoning="docs question")
+    llm = FakeLLMClient(decision)
+    agents = _all_stub_agents()
+    orchestrator = Orchestrator(router=Router(llm), agents=agents)
+
+    for i in range(7):
+        await orchestrator.handle(f"question {i}")
+
+    # The 7th call (i=6) receives history built from the 6 turns recorded so far (q0..q5),
+    # trimmed to the last 5 — so q0 is dropped, leaving q1..q5.
+    last_history = agents["knowledge"].received_history[-1]
+    assert len(last_history) == 5 * 2  # 5 turns, user+assistant each
+    assert last_history[0]["content"] == "question 1"  # turn 0 dropped

@@ -45,14 +45,21 @@ class Router:
         self._llm_client = llm_client
         self._max_retries = max_retries
 
-    async def route(self, user_request: str) -> RoutingDecision:
+    async def route(self, user_request: str, history_text: str = "") -> RoutingDecision:
+        # history_text (a flattened prior-turns summary from ConversationMemory) lets the router
+        # resolve short follow-ups ("what about last quarter") that are ambiguous read alone —
+        # empty by default, so a request's first turn behaves exactly as before.
+        user_prompt = user_request
+        if history_text:
+            user_prompt = f"Conversation so far:\n{history_text}\n\nCurrent request: {user_request}"
+
         last_error: Exception | None = None
 
         for attempt in range(self._max_retries + 1):
             try:
                 return await self._llm_client.get_structured_output(
                     system_prompt=_SYSTEM_PROMPT,
-                    user_prompt=user_request,
+                    user_prompt=user_prompt,
                     schema=RoutingDecision,
                 )
             except (ValidationError, ValueError) as exc:

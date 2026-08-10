@@ -65,6 +65,21 @@ class _UnseededDatabaseAgent:
         )
 
 
+class _UnseededCommunicationAgent:
+    """Fallback when Slack/email credentials aren't configured yet (e.g. a fresh checkout that
+    hasn't filled in the Component 6 vars in .env) — constructing the real clients would
+    otherwise fail with a raw KeyError instead of a clear message."""
+
+    async def handle(self, user_request: str):
+        from enterprise_ai.core.agent import AgentResult
+
+        return AgentResult(
+            agent_name="communication",
+            content="Slack/email credentials haven't been configured in this environment yet — "
+            "see .env.example's Communication Agent section.",
+        )
+
+
 async def build_orchestrator():
     from enterprise_ai.agents.communication.agent import CommunicationAgent
     from enterprise_ai.agents.database.agent import DatabaseAgent
@@ -75,6 +90,8 @@ async def build_orchestrator():
     from enterprise_ai.integrations.atlassian.bitbucket_client import BitbucketClient
     from enterprise_ai.integrations.atlassian.confluence_client import ConfluenceClient
     from enterprise_ai.integrations.atlassian.jira_client import JiraClient
+    from enterprise_ai.integrations.communication.email_client import EmailClient
+    from enterprise_ai.integrations.communication.slack_client import SlackClient
     from enterprise_ai.integrations.sql_db.postgres_client import PostgresQueryClient
     from enterprise_ai.integrations.vector_store.pgvector_store import PgVectorStore
     from enterprise_ai.orchestrator.orchestrator import Orchestrator
@@ -112,6 +129,15 @@ async def build_orchestrator():
             await db_query_client.close()
         db_query_client = None
 
+    try:
+        communication_agent = CommunicationAgent(
+            llm_client=default_llm_client(),
+            slack_client=SlackClient(),
+            email_client=EmailClient(),
+        )
+    except KeyError:
+        communication_agent = _UnseededCommunicationAgent()
+
     agents = {
         "knowledge": KnowledgeAgent(
             embedding_client=default_embedding_client(),
@@ -120,11 +146,40 @@ async def build_orchestrator():
         ),
         "performance": performance_agent,
         "database": database_agent,
-        "communication": CommunicationAgent(),
+        "communication": communication_agent,
     }
 
     orchestrator = Orchestrator(router=Router(default_llm_client()), agents=agents)
     return orchestrator, vector_store, db_query_client
+
+
+async def _drive_confirmation_menu(orchestrator, agent_name: str, agent_result) -> None:
+    """Drives the Send it / Edit / Cancel menu for a ConfirmableAgent's staged action
+    (learnings.md #8). Deterministic, local, no LLM call for Send/Cancel — only Edit re-invokes
+    the LLM (to redraft), which may stage another round requiring this same menu again."""
+    from enterprise_ai.core.agent import ConfirmableAgent
+
+    agent = orchestrator.get_agent(agent_name)
+    if not isinstance(agent, ConfirmableAgent):
+        return  # shouldn't happen — requires_confirmation only ever comes from a ConfirmableAgent
+
+    while agent_result.metadata and agent_result.metadata.get("requires_confirmation"):
+        print(f"\n{agent_name}: {agent_result.content}")
+        choice = input("  [1] Send it   [2] Edit   [3] Cancel\n  > ").strip().lower()
+
+        if choice in {"1", "send", "send it"}:
+            agent_result = await agent.confirm_pending()
+            print(f"\n{agent_name}: {agent_result.content}")
+            return
+        if choice in {"3", "cancel"}:
+            agent_result = agent.cancel_pending()
+            print(f"\n{agent_name}: {agent_result.content}")
+            return
+        if choice in {"2", "edit"}:
+            edit_text = input("  Type your revision: ").strip()
+            agent_result = await agent.revise_pending(edit_text)
+            continue
+        print("  Please choose 1, 2, or 3.")
 
 
 async def main() -> None:
@@ -156,6 +211,9 @@ async def main() -> None:
             result = await orchestrator.handle(user_input)
             print(f"  [routed to: {', '.join(result.routed_to)}]")
             for agent_name, agent_result in result.results.items():
+                if agent_result.metadata and agent_result.metadata.get("requires_confirmation"):
+                    await _drive_confirmation_menu(orchestrator, agent_name, agent_result)
+                    continue
                 print(f"\n{agent_name}: {agent_result.content}")
                 if show_citations and agent_result.metadata:
                     print(f"  metadata: {agent_result.metadata}")
