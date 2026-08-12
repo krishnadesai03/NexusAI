@@ -51,3 +51,8 @@ class Orchestrator:
         """Lets a caller (e.g. chat.py driving a ConfirmableAgent's confirm/cancel/revise menu)
         reach a specific agent instance directly, outside the normal route-and-fan-out path."""
         return self._agents[name]
+
+    def agent_names(self) -> list[str]:
+        """Lets a caller (e.g. the web API's 409 pending-conflict guard) check every registered
+        agent for a staged ConfirmableAgent action without hardcoding which agent names exist."""
+        return list(self._agents.keys())
