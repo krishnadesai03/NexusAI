@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from enterprise_ai.core.agent import AgentResult
+from enterprise_ai.core.agent import AgentResult, OnEvent, emit_event
 from enterprise_ai.core.llm_client import LLMClient
 from enterprise_ai.core.llm_retry import LLMUnavailableError, call_tool_with_retry
 from enterprise_ai.integrations.atlassian.bitbucket_client import BitbucketClient
@@ -159,7 +159,9 @@ class PerformanceAgent:
             return {"content": content}
         raise ValueError(f"Unknown tool: {name}")
 
-    async def handle(self, user_request: str, history: list[dict] | None = None) -> AgentResult:
+    async def handle(
+        self, user_request: str, history: list[dict] | None = None, on_event: OnEvent | None = None
+    ) -> AgentResult:
         messages = [
             {"role": "system", "content": _build_system_prompt(self._sprint_calendar)},
             *(history or []),
@@ -201,10 +203,18 @@ class PerformanceAgent:
             )
 
             for tc in response.tool_calls:
+                emit_event(
+                    on_event,
+                    {"type": "tool_called", "agent": "performance", "tool": tc.name, "detail": json.dumps(tc.arguments)},
+                )
                 try:
                     result = await self._execute_tool(tc.name, tc.arguments, citations)
                 except Exception as exc:  # noqa: BLE001 — feed the real error back so the LLM can retry
                     result = {"error": str(exc)}
+                emit_event(
+                    on_event,
+                    {"type": "tool_result", "agent": "performance", "tool": tc.name, "detail": json.dumps(result)[:200]},
+                )
                 messages.append({"role": "tool", "tool_call_id": tc.id, "content": json.dumps(result)})
 
         return AgentResult(

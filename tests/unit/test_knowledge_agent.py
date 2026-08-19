@@ -142,3 +142,38 @@ async def test_respects_configured_top_k():
     await agent.handle("some question")
 
     assert vector_store.last_top_k == 3
+
+
+async def test_emits_tool_events_for_each_phase_of_the_live_trace():
+    chunks = [RetrievedChunk(doc_id="pto_policy_us.md::0", text="15 days PTO per year.", metadata={}, similarity=0.9)]
+    answer = KnowledgeAnswer(answer="15 days per year.", citations=["pto_policy_us.md::0"], answer_found=True)
+    agent = KnowledgeAgent(
+        embedding_client=FakeEmbeddingClient(),
+        vector_store=FakeVectorStore(chunks),
+        llm_client=FakeLLMClient(answer),
+    )
+    events: list[dict] = []
+
+    await agent.handle("How many PTO days do I get in the US?", on_event=events.append)
+
+    tools_called = [e["tool"] for e in events if e["type"] == "tool_called"]
+    tools_resulted = [e["tool"] for e in events if e["type"] == "tool_result"]
+    assert tools_called == ["embed_query", "search_documents", "generate_answer"]
+    assert tools_resulted == ["embed_query", "search_documents", "generate_answer"]
+    assert all(e["agent"] == "knowledge" for e in events)
+
+
+async def test_no_generate_event_when_retrieval_floor_not_cleared():
+    chunks = [RetrievedChunk(doc_id="unrelated.md::0", text="unrelated content", metadata={}, similarity=0.1)]
+    agent = KnowledgeAgent(
+        embedding_client=FakeEmbeddingClient(),
+        vector_store=FakeVectorStore(chunks),
+        llm_client=ExplodingLLMClient(),
+        retrieval_floor=0.2,
+    )
+    events: list[dict] = []
+
+    await agent.handle("What's the weather on Mars?", on_event=events.append)
+
+    tools_called = [e["tool"] for e in events if e["type"] == "tool_called"]
+    assert tools_called == ["embed_query", "search_documents"]  # never reaches generate_answer

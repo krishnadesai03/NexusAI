@@ -3,14 +3,12 @@
 import { useState } from "react";
 
 export function PendingActionCard({
-  agentName,
   content,
   busy,
   onConfirm,
   onCancel,
   onRevise,
 }: {
-  agentName: string;
   content: string;
   busy: boolean;
   onConfirm: () => void;
@@ -29,7 +27,7 @@ export function PendingActionCard({
 
   return (
     <div className="pending-card">
-      <span className="agent-name">{agentName} — awaiting your confirmation</span>
+      <span className="message-label">AI Assistant — awaiting your confirmation</span>
       {content}
 
       {editing ? (

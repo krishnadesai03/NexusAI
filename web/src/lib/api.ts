@@ -1,4 +1,4 @@
-import type { AgentResultResponse, ApiErrorBody, ChatResponse, LoginResponse, MeResponse } from "./types";
+import type { AgentResultResponse, ApiErrorBody, ChatResponse, LoginResponse, MeResponse, TraceEvent } from "./types";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 const TOKEN_STORAGE_KEY = "enterprise-ai-token";
@@ -60,8 +60,66 @@ export function logout(): Promise<void> {
   return request<void>("/auth/logout", { method: "POST" });
 }
 
-export function sendChatMessage(message: string): Promise<ChatResponse> {
-  return request<ChatResponse>("/chat", { method: "POST", body: JSON.stringify({ message }) });
+/**
+ * /chat streams Server-Sent Events (api/chat.py) rather than returning one JSON response — this
+ * powers the live "Working" trace panel. Uses fetch()+a manual ReadableStream reader instead of
+ * the browser's native EventSource specifically because EventSource can't send a custom
+ * Authorization header, and putting the session token in the URL as a query param instead would
+ * violate the same "never put sensitive data in a URL" rule this project already follows
+ * everywhere else.
+ *
+ * `onEvent` receives every event (including `done`/`error`) as it arrives — the trace panel
+ * renders directly off that stream. This function additionally resolves with the final
+ * ChatResponse (from the `done` event) or throws (on an `error` event), so callers who only want
+ * the final answer don't have to duplicate that extraction logic themselves.
+ */
+export async function streamChatMessage(message: string, onEvent: (event: TraceEvent) => void): Promise<ChatResponse> {
+  const headers = new Headers();
+  headers.set("Content-Type", "application/json");
+  const token = getToken();
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+
+  const response = await fetch(`${API_BASE_URL}/chat`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ message }),
+  });
+
+  if (!response.ok) {
+    const body = await response.json();
+    throw new ApiError(response.status, body as ApiErrorBody);
+  }
+  if (!response.body) {
+    throw new Error("Streaming response has no body.");
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let finalResult: ChatResponse | null = null;
+  let streamError: string | null = null;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+
+    let boundary: number;
+    while ((boundary = buffer.indexOf("\n\n")) !== -1) {
+      const rawEvent = buffer.slice(0, boundary).trim();
+      buffer = buffer.slice(boundary + 2);
+      if (!rawEvent.startsWith("data:")) continue;
+
+      const event = JSON.parse(rawEvent.slice("data:".length).trim()) as TraceEvent;
+      onEvent(event);
+      if (event.type === "done") finalResult = event.result;
+      if (event.type === "error") streamError = event.error;
+    }
+  }
+
+  if (streamError) throw new Error(streamError);
+  if (finalResult) return finalResult;
+  throw new Error("Stream ended without a result.");
 }
 
 export function confirmPending(agent: string): Promise<AgentResultResponse> {

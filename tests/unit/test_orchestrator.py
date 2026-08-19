@@ -21,7 +21,7 @@ class FakeAgent:
         self._name = name
         self.received_history: list[list[dict] | None] = []
 
-    async def handle(self, user_request: str, history: list[dict] | None = None) -> AgentResult:
+    async def handle(self, user_request: str, history: list[dict] | None = None, on_event=None) -> AgentResult:
         self.received_history.append(history)
         return AgentResult(agent_name=self._name, content=f"{self._name} handled it")
 
@@ -85,3 +85,42 @@ async def test_memory_window_keeps_only_last_five_turns():
     last_history = agents["knowledge"].received_history[-1]
     assert len(last_history) == 5 * 2  # 5 turns, user+assistant each
     assert last_history[0]["content"] == "question 1"  # turn 0 dropped
+
+
+async def test_emits_routing_and_agent_lifecycle_events_for_single_agent():
+    decision = RoutingDecision(agents=["knowledge"], reasoning="docs question")
+    orchestrator = Orchestrator(router=Router(FakeLLMClient(decision)), agents=_all_stub_agents())
+    events: list[dict] = []
+
+    await orchestrator.handle("What's our PTO policy?", on_event=events.append)
+
+    assert events[0] == {"type": "routing_decided", "agents": ["knowledge"], "reasoning": "docs question"}
+    assert {"type": "agent_started", "agent": "knowledge"} in events
+    assert {"type": "agent_finished", "agent": "knowledge"} in events
+    # started must precede finished for the same agent
+    assert events.index({"type": "agent_started", "agent": "knowledge"}) < events.index(
+        {"type": "agent_finished", "agent": "knowledge"}
+    )
+
+
+async def test_emits_agent_lifecycle_events_for_every_agent_in_a_fan_out():
+    decision = RoutingDecision(agents=["database", "knowledge"], reasoning="needs both")
+    orchestrator = Orchestrator(router=Router(FakeLLMClient(decision)), agents=_all_stub_agents())
+    events: list[dict] = []
+
+    await orchestrator.handle("Compare last sprint's velocity to what the docs promised", on_event=events.append)
+
+    started = {e["agent"] for e in events if e["type"] == "agent_started"}
+    finished = {e["agent"] for e in events if e["type"] == "agent_finished"}
+    assert started == {"database", "knowledge"}
+    assert finished == {"database", "knowledge"}
+
+
+async def test_no_events_emitted_when_on_event_is_omitted():
+    decision = RoutingDecision(agents=["knowledge"], reasoning="docs question")
+    orchestrator = Orchestrator(router=Router(FakeLLMClient(decision)), agents=_all_stub_agents())
+
+    # must not raise just because on_event wasn't passed — matches every existing caller
+    result = await orchestrator.handle("What's our PTO policy?")
+
+    assert result.routed_to == ["knowledge"]

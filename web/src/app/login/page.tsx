@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type FormEvent } from "react";
+import { useState, type SubmitEvent } from "react";
 import { useRouter } from "next/navigation";
 import { ApiError, login, setToken } from "@/lib/api";
 
@@ -11,7 +11,7 @@ export default function LoginPage() {
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
-  async function handleSubmit(event: FormEvent) {
+  async function handleSubmit(event: SubmitEvent) {
     event.preventDefault();
     setError(null);
     setSubmitting(true);
@@ -28,15 +28,24 @@ export default function LoginPage() {
 
   return (
     <div className="login-page">
-      <div className="login-card">
-        <h1 className="login-title">Enterprise AI Assistant</h1>
-        <p className="login-subtitle">Sign in with the credentials your admin gave you.</p>
+      <div className="login-left">
+        <p className="login-brand">Alderbrook Systems</p>
+        <h1 className="login-welcome">
+          Welcome
+          <br />
+          Back
+        </h1>
+        <p className="login-subtitle">Simply all the tools my team and I need.</p>
+      </div>
+
+      <div className="login-right">
+        <h2 className="login-title">Sign in</h2>
 
         {error && <div className="error-text">{error}</div>}
 
         <form onSubmit={handleSubmit}>
           <div className="field">
-            <label htmlFor="email">Email</label>
+            <label htmlFor="email">Email Address</label>
             <input
               id="email"
               type="email"
@@ -58,7 +67,7 @@ export default function LoginPage() {
             />
           </div>
           <button type="submit" className="primary-button" disabled={submitting}>
-            {submitting ? "Signing in..." : "Log In"}
+            {submitting ? "Signing in..." : "Sign in now"}
           </button>
         </form>
       </div>

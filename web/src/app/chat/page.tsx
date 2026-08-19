@@ -11,13 +11,15 @@ import {
   logout as apiLogout,
   me,
   revisePending,
-  sendChatMessage,
+  streamChatMessage,
 } from "@/lib/api";
 import { clearTranscript, loadTranscript, saveTranscript } from "@/lib/transcript";
+import { applyTraceEvent, emptyTrace, type Trace } from "@/lib/trace";
 import type { AgentResultResponse, ChatTurn } from "@/lib/types";
 import { AgentReply } from "@/components/AgentReply";
 import { ChatInput } from "@/components/ChatInput";
 import { PendingActionCard } from "@/components/PendingActionCard";
+import { TracePanel } from "@/components/TracePanel";
 
 interface PendingRef {
   turnId: string;
@@ -29,6 +31,8 @@ export default function ChatPage() {
   const [displayName, setDisplayName] = useState<string | null>(null);
   const [turns, setTurns] = useState<ChatTurn[]>([]);
   const [showCitations, setShowCitations] = useState(false);
+  const [working, setWorking] = useState(false);
+  const [trace, setTrace] = useState<Trace>(emptyTrace());
   const [sending, setSending] = useState(false);
   const [pendingBusy, setPendingBusy] = useState(false);
   const [pending, setPending] = useState<PendingRef | null>(null);
@@ -85,8 +89,11 @@ export default function ChatPage() {
   async function handleSend(message: string) {
     setError(null);
     setSending(true);
+    setTrace(emptyTrace()); // a new query always starts a fresh graph, per the Working toggle's spec
     try {
-      const response = await sendChatMessage(message);
+      const response = await streamChatMessage(message, (event) => {
+        setTrace((prev) => applyTraceEvent(prev, event));
+      });
       const turn: ChatTurn = {
         id: crypto.randomUUID(),
         userMessage: message,
@@ -160,52 +167,65 @@ export default function ChatPage() {
 
   return (
     <div className="chat-page">
-      <header className="chat-header">
-        <h1>Enterprise AI Assistant</h1>
-        <div className="header-right">
-          {displayName && <span>{displayName}</span>}
-          <label className="toggle-label">
-            <input type="checkbox" checked={showCitations} onChange={(e) => setShowCitations(e.target.checked)} />
-            Show citations
-          </label>
-          <button className="text-button" onClick={handleLogout}>
-            Logout
-          </button>
+      <div className="chat-main">
+        <header className="chat-header">
+          <div className="brand">
+            <span className="brand-logo">N</span>
+            <h1>Nexus AI</h1>
+          </div>
+          <div className="header-center">{displayName && <span>{displayName}</span>}</div>
+          <div className="header-right">
+            <label className="toggle-label">
+              <input type="checkbox" checked={working} onChange={(e) => setWorking(e.target.checked)} />
+              Working
+            </label>
+            <label className="toggle-label">
+              <input type="checkbox" checked={showCitations} onChange={(e) => setShowCitations(e.target.checked)} />
+              Show citations
+            </label>
+            <button className="text-button" onClick={handleLogout}>
+              Logout
+            </button>
+          </div>
+        </header>
+
+        <div className="chat-body">
+          <div className="chat-scroll-inner">
+            {turns.length === 0 && <p className="empty-state">Ask a question to get started.</p>}
+
+            {turns.map((turn) => (
+              <div key={turn.id} style={{ display: "contents" }}>
+                <div className="user-message">
+                  <span className="message-label">You</span>
+                  {turn.userMessage}
+                </div>
+                {Object.entries(turn.results).map(([agentName, result]) =>
+                  result.requires_confirmation && pending?.turnId === turn.id && pending.agentName === agentName ? (
+                    <PendingActionCard
+                      key={agentName}
+                      content={result.content}
+                      busy={pendingBusy}
+                      onConfirm={handleConfirm}
+                      onCancel={handleCancel}
+                      onRevise={handleRevise}
+                    />
+                  ) : (
+                    <AgentReply key={agentName} result={result} showCitations={showCitations} />
+                  )
+                )}
+              </div>
+            ))}
+
+            {sending && <div className="typing-indicator">Thinking...</div>}
+            <div ref={scrollRef} />
+          </div>
         </div>
-      </header>
 
-      <div className="chat-body">
-        <div className="chat-scroll-inner">
-          {turns.length === 0 && <p className="empty-state">Ask a question to get started.</p>}
-
-          {turns.map((turn) => (
-            <div key={turn.id} style={{ display: "contents" }}>
-              <div className="user-message">{turn.userMessage}</div>
-              {Object.entries(turn.results).map(([agentName, result]) =>
-                result.requires_confirmation && pending?.turnId === turn.id && pending.agentName === agentName ? (
-                  <PendingActionCard
-                    key={agentName}
-                    agentName={agentName}
-                    content={result.content}
-                    busy={pendingBusy}
-                    onConfirm={handleConfirm}
-                    onCancel={handleCancel}
-                    onRevise={handleRevise}
-                  />
-                ) : (
-                  <AgentReply key={agentName} agentName={agentName} result={result} showCitations={showCitations} />
-                )
-              )}
-            </div>
-          ))}
-
-          {sending && <div className="typing-indicator">Thinking...</div>}
-          <div ref={scrollRef} />
-        </div>
+        {error && <div className="inline-error">{error}</div>}
+        <ChatInput disabled={sending || pending !== null} onSend={handleSend} />
       </div>
 
-      {error && <div className="inline-error">{error}</div>}
-      <ChatInput disabled={sending || pending !== null} onSend={handleSend} />
+      {working && <TracePanel trace={trace} />}
     </div>
   );
 }

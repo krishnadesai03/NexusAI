@@ -151,3 +151,23 @@ async def test_gives_up_with_clean_message_after_persistent_llm_failures():
 
     assert "couldn't reach the AI service" in result.content
     assert llm.attempts == LLM_CALL_MAX_ATTEMPTS
+
+
+async def test_emits_tool_called_and_tool_result_events_for_the_live_trace():
+    db = FakeDbClient(result={"row_count": 1, "truncated": False, "rows": [{"name": "Priya Nair", "salary": 71100.0}]})
+    sql = "SELECT name, salary FROM company_data.employees WHERE name = 'Priya Nair'"
+    llm = FakeLLMClient(
+        [
+            ToolResponse(content=None, tool_calls=[ToolCall(id="call_1", name="run_sql_query", arguments={"sql": sql})]),
+            ToolResponse(content="Priya Nair's salary is $71,100."),
+        ]
+    )
+    agent = _make_agent(llm, db_client=db)
+    events: list[dict] = []
+
+    await agent.handle("what is Priya Nair's salary?", on_event=events.append)
+
+    assert events[0] == {"type": "tool_called", "agent": "database", "tool": "run_sql_query", "detail": sql}
+    assert events[1]["type"] == "tool_result"
+    assert events[1]["agent"] == "database"
+    assert events[1]["tool"] == "run_sql_query"

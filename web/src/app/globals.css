@@ -43,29 +43,53 @@ input {
   min-height: 100vh;
   display: flex;
   align-items: center;
-  justify-content: center;
-  padding: 24px;
+  justify-content: space-between;
+  gap: 40px;
+  padding: 0 7vw;
+  background-image: linear-gradient(rgba(8, 12, 20, 0.5), rgba(8, 12, 20, 0.6)), url("/login-bg.jpg");
+  background-size: cover;
+  background-position: center;
 }
 
-.login-card {
-  width: 100%;
-  max-width: 380px;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 32px;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+.login-left {
+  color: white;
+  max-width: 480px;
 }
 
-.login-title {
+.login-brand {
   font-size: 20px;
   font-weight: 600;
-  margin: 0 0 4px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.75);
+  margin: 0 0 28px;
+}
+
+.login-welcome {
+  font-size: 80px;
+  font-weight: 700;
+  line-height: 1.15;
+  margin: 0 0 16px;
 }
 
 .login-subtitle {
-  font-size: 14px;
-  color: var(--text-muted);
+  font-size: 18px;
+  line-height: 1.5;
+  color: rgba(255, 255, 255, 0.8);
+  margin: 0;
+}
+
+.login-right {
+  width: 100%;
+  max-width: 460px;
+  flex-shrink: 0;
+}
+
+.login-title {
+  font-size: 28px;
+  font-weight: 700;
+  color: white;
+  text-align: center;
   margin: 0 0 24px;
 }
 
@@ -77,35 +101,39 @@ input {
   display: block;
   font-size: 13px;
   font-weight: 500;
+  color: rgba(255, 255, 255, 0.9);
   margin-bottom: 6px;
 }
 
 .field input {
   width: 100%;
-  padding: 10px 12px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
+  padding: 12px 14px;
+  border: none;
+  border-radius: 6px;
   font-size: 14px;
+  background: white;
+  color: var(--text);
 }
 
 .field input:focus {
   outline: 2px solid var(--accent);
-  outline-offset: -1px;
+  outline-offset: 1px;
 }
 
 .primary-button {
-  width: 100%;
-  padding: 10px 12px;
-  background: var(--accent);
+  display: block;
+  width: auto;
+  padding: 13px 44px;
+  background: #e8622c;
   color: white;
   border: none;
-  border-radius: 8px;
+  border-radius: 6px;
   font-size: 14px;
   font-weight: 600;
 }
 
 .primary-button:hover:not(:disabled) {
-  background: var(--accent-hover);
+  background: #d0531f;
 }
 
 .primary-button:disabled {
@@ -114,29 +142,95 @@ input {
 }
 
 .error-text {
-  color: var(--danger);
-  background: var(--danger-bg);
-  border-radius: 8px;
+  color: #ffe1e1;
+  background: rgba(214, 69, 69, 0.35);
+  border: 1px solid rgba(255, 180, 180, 0.5);
+  border-radius: 6px;
   padding: 8px 12px;
   font-size: 13px;
   margin-bottom: 16px;
 }
 
+@media (max-width: 760px) {
+  .login-page {
+    flex-direction: column;
+    justify-content: center;
+    padding: 40px 24px;
+  }
+
+  .login-left {
+    text-align: center;
+  }
+
+  .login-welcome {
+    font-size: 40px;
+  }
+
+  .login-right {
+    max-width: 100%;
+  }
+}
+
 /* ---- Chat ---------------------------------------------------------------------------------- */
 
 .chat-page {
-  min-height: 100vh;
+  height: 100vh;
+  display: flex;
+  flex-direction: row;
+  overflow: hidden;
+}
+
+.chat-main {
+  /* fixed height (not min-height) so .chat-body's overflow-y:auto is what scrolls — otherwise
+     the flex column grows past the viewport and the whole document scrolls instead, taking the
+     header with it. position: sticky below is a second safety net on top of this fix.
+     min-width: 0 lets this flex item actually shrink when the trace panel appears next to it —
+     without it, a flex child won't shrink past its content's natural width. */
+  flex: 1;
+  min-width: 0;
+  height: 100%;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
 }
 
 .chat-header {
-  display: flex;
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
   align-items: center;
-  justify-content: space-between;
   padding: 14px 24px;
   background: var(--surface);
   border-bottom: 1px solid var(--border);
+}
+
+.header-center {
+  justify-self: center;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-muted);
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.brand-logo {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: #000;
+  color: white;
+  font-size: 15px;
+  font-weight: 700;
+  flex-shrink: 0;
 }
 
 .chat-header h1 {
@@ -146,6 +240,7 @@ input {
 }
 
 .header-right {
+  justify-self: end;
   display: flex;
   align-items: center;
   gap: 16px;
@@ -202,6 +297,10 @@ input {
   white-space: pre-wrap;
 }
 
+.user-message .message-label {
+  color: rgba(255, 255, 255, 0.75);
+}
+
 .agent-reply {
   align-self: flex-start;
   max-width: 80%;
@@ -213,7 +312,7 @@ input {
   white-space: pre-wrap;
 }
 
-.agent-reply .agent-name {
+.message-label {
   display: block;
   font-size: 11px;
   font-weight: 600;
@@ -246,14 +345,8 @@ input {
   font-size: 14px;
 }
 
-.pending-card .agent-name {
-  display: block;
-  font-size: 11px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.03em;
+.pending-card .message-label {
   color: var(--accent);
-  margin-bottom: 6px;
 }
 
 .pending-actions {
@@ -349,4 +442,162 @@ input {
   color: var(--text-muted);
   font-size: 13px;
   font-style: italic;
+}
+
+/* ---- Trace panel (Working toggle) ----------------------------------------------------------- */
+
+.trace-panel {
+  width: 360px;
+  flex-shrink: 0;
+  height: 100%;
+  overflow-y: auto;
+  background: var(--surface);
+  border-left: 1px solid var(--border);
+  padding: 20px;
+}
+
+.trace-title {
+  font-size: 13px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--text-muted);
+  margin-bottom: 16px;
+}
+
+.trace-empty {
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.trace-graph {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.trace-connector {
+  width: 2px;
+  height: 18px;
+  background: var(--border);
+  margin: 0 auto;
+}
+
+.trace-connector-small {
+  height: 10px;
+}
+
+.trace-node {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 12px;
+  background: var(--bg);
+  text-align: center;
+}
+
+.trace-node.compact {
+  padding: 6px 10px;
+}
+
+.trace-node.running {
+  border-color: var(--accent);
+}
+
+.trace-node-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  text-transform: capitalize;
+}
+
+.trace-node-sublabel {
+  display: block;
+  margin-top: 4px;
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--text-muted);
+  text-transform: none;
+}
+
+.trace-node-spinner {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: trace-pulse 1s ease-in-out infinite;
+}
+
+@keyframes trace-pulse {
+  0%, 100% {
+    opacity: 0.3;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+.trace-branches {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.trace-branch {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.trace-step {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.trace-step-box {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.trace-step-box.running {
+  border-color: var(--accent);
+  background: var(--bg);
+}
+
+.trace-step-box.done {
+  background: var(--surface);
+}
+
+.trace-step-tool {
+  display: block;
+  font-weight: 600;
+}
+
+.trace-step-detail {
+  display: block;
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+
+.trace-step-result {
+  display: block;
+  color: var(--success);
+  margin-top: 2px;
+}
+
+.trace-error {
+  margin-top: 12px;
+  color: var(--danger);
+  background: var(--danger-bg);
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-size: 12px;
 }

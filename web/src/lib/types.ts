@@ -36,3 +36,14 @@ export interface ChatTurn {
   routedTo: string[];
   results: Record<string, AgentResultResponse>;
 }
+
+// Live orchestration-trace events streamed over /chat's SSE response (api/chat.py) — mirrors
+// the plain dicts enterprise_ai.core.agent.emit_event sends. Powers the "Working" trace panel.
+export type TraceEvent =
+  | { type: "routing_decided"; agents: string[]; reasoning: string }
+  | { type: "agent_started"; agent: string }
+  | { type: "agent_finished"; agent: string }
+  | { type: "tool_called"; agent: string; tool: string; detail?: string }
+  | { type: "tool_result"; agent: string; tool: string; detail?: string }
+  | { type: "done"; result: ChatResponse }
+  | { type: "error"; error: string };

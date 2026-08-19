@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 
-from enterprise_ai.core.agent import Agent, AgentResult
+from enterprise_ai.core.agent import Agent, AgentResult, OnEvent, emit_event
 from enterprise_ai.orchestrator.memory import ConversationMemory
 from enterprise_ai.orchestrator.router import Router, RoutingError
 
@@ -27,20 +27,29 @@ class Orchestrator:
         self._agents = agents
         self._memory = memory or ConversationMemory()
 
-    async def handle(self, user_request: str) -> OrchestratorResult:
+    async def handle(self, user_request: str, on_event: OnEvent | None = None) -> OrchestratorResult:
         history_messages = self._memory.as_messages()
         history_text = self._memory.as_text_summary()
 
         decision = await self._router.route(user_request, history_text=history_text)
+        emit_event(on_event, {"type": "routing_decided", "agents": list(decision.agents), "reasoning": decision.reasoning})
 
         unknown = [name for name in decision.agents if name not in self._agents]
         if unknown:
             raise RoutingError(f"Routing decision referenced unregistered agent(s): {unknown}")
 
         agent_names = decision.agents
-        results = await asyncio.gather(
-            *(self._agents[name].handle(user_request, history_messages) for name in agent_names)
-        )
+
+        async def _run_agent(name: str) -> AgentResult:
+            # agent_started/agent_finished live here rather than inside each agent, so this is
+            # the one place that knows about every agent uniformly — an agent implementation
+            # only ever needs to report its own tool calls, not its own start/end.
+            emit_event(on_event, {"type": "agent_started", "agent": name})
+            result = await self._agents[name].handle(user_request, history_messages, on_event)
+            emit_event(on_event, {"type": "agent_finished", "agent": name})
+            return result
+
+        results = await asyncio.gather(*(_run_agent(name) for name in agent_names))
         results_by_name = dict(zip(agent_names, results))
 
         self._memory.add_turn(user_request, results_by_name)

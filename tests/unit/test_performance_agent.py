@@ -215,3 +215,27 @@ async def test_gives_up_with_clean_message_after_persistent_llm_failures():
 
     assert "couldn't reach the AI service" in result.content
     assert llm.attempts == LLM_CALL_MAX_ATTEMPTS
+
+
+async def test_emits_tool_called_and_tool_result_events_for_the_live_trace():
+    jira = FakeJiraClient(results=[{"key": "KAN-7", "summary": "x", "status": "Done"}])
+    llm = FakeLLMClient(
+        [
+            ToolResponse(
+                content=None,
+                tool_calls=[ToolCall(id="call_1", name="search_jira_issues", arguments={"sprint_index": 1})],
+            ),
+            ToolResponse(content="Sprint 1 had 1 completed ticket."),
+        ]
+    )
+    agent = _make_agent(llm, jira=jira)
+    events: list[dict] = []
+
+    await agent.handle("how many tickets in sprint 1?", on_event=events.append)
+
+    assert events[0]["type"] == "tool_called"
+    assert events[0]["agent"] == "performance"
+    assert events[0]["tool"] == "search_jira_issues"
+    assert events[1]["type"] == "tool_result"
+    assert events[1]["agent"] == "performance"
+    assert events[1]["tool"] == "search_jira_issues"

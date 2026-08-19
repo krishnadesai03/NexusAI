@@ -29,6 +29,17 @@ from enterprise_ai.orchestrator.schemas import RoutingDecision
 client = TestClient(app)  # no `with` — lifespan never runs, so no real DB/API connections needed
 
 
+def _parse_sse_events(text: str) -> list[dict]:
+    """/chat streams `data: {...}\\n\\n` lines (api/chat.py) — parse them back into the list of
+    JSON events a real frontend would receive, in order."""
+    events = []
+    for line in text.split("\n"):
+        line = line.strip()
+        if line.startswith("data:"):
+            events.append(json.loads(line[len("data:") :].strip()))
+    return events
+
+
 @pytest.fixture(autouse=True)
 def _reset_overrides():
     app.dependency_overrides.clear()
@@ -48,7 +59,7 @@ class FakeAgent:
     def __init__(self, name: str):
         self._name = name
 
-    async def handle(self, user_request: str, history: list[dict] | None = None) -> AgentResult:
+    async def handle(self, user_request: str, history: list[dict] | None = None, on_event=None) -> AgentResult:
         return AgentResult(agent_name=self._name, content=f"{self._name} handled it")
 
 
@@ -59,7 +70,7 @@ class FakeConfirmableAgent:
     def __init__(self):
         self._pending = False
 
-    async def handle(self, user_request: str, history: list[dict] | None = None) -> AgentResult:
+    async def handle(self, user_request: str, history: list[dict] | None = None, on_event=None) -> AgentResult:
         self._pending = True
         return AgentResult(
             agent_name="communication",
@@ -104,13 +115,13 @@ def _fake_shared(*, communication_configured: bool = False) -> SharedResources:
     )
 
 
-def _session_with_agents(agents: dict) -> tuple[SessionStore, str]:
+def _session_with_agents(agents: dict, route_to: list[str] | None = None) -> tuple[SessionStore, str]:
     store = SessionStore()
-    # The routing decision only matters for the one test that actually calls /chat with a
-    # non-empty agents dict — pick an arbitrary registered name so RoutingDecision's non-empty
-    # constraint is satisfied either way.
-    placeholder_decision = RoutingDecision(agents=[next(iter(agents), "knowledge")], reasoning="n/a")
-    orchestrator = Orchestrator(router=Router(FakeLLMClient(placeholder_decision)), agents=agents)
+    # route_to lets a test control which agent(s) the fake router "picks" — defaults to just the
+    # first registered agent, which is all most tests here need (RoutingDecision.agents just
+    # can't be empty).
+    decision = RoutingDecision(agents=route_to or [next(iter(agents), "knowledge")], reasoning="n/a")
+    orchestrator = Orchestrator(router=Router(FakeLLMClient(decision)), agents=agents)
     session = store.create(email="priya@company.example", display_name="Priya Nair", orchestrator=orchestrator)
     return store, session.token
 
@@ -191,7 +202,7 @@ def test_logout_invalidates_the_token():
 # ---- chat ---------------------------------------------------------------------------------------
 
 
-def test_chat_routes_and_returns_expected_shape():
+def test_chat_streams_events_and_ends_with_the_expected_done_payload():
     store, token = _session_with_agents({"knowledge": FakeAgent("knowledge")})
     app.dependency_overrides[get_session_store] = lambda: store
 
@@ -200,13 +211,41 @@ def test_chat_routes_and_returns_expected_shape():
     )
 
     assert response.status_code == 200
-    body = response.json()
-    # this test only verifies the HTTP wiring and response shape, not routing logic itself
-    # (Orchestrator's own test suite covers that) — the fake router always picks "knowledge" here.
-    assert body == {
+    assert response.headers["content-type"].startswith("text/event-stream")
+    events = _parse_sse_events(response.text)
+
+    # this test only verifies the HTTP/streaming wiring and response shape, not routing logic
+    # itself (Orchestrator's own test suite covers that) — the fake router always picks
+    # "knowledge" here.
+    assert events[0] == {"type": "routing_decided", "agents": ["knowledge"], "reasoning": "n/a"}
+    assert {"type": "agent_started", "agent": "knowledge"} in events
+    assert {"type": "agent_finished", "agent": "knowledge"} in events
+
+    done_event = events[-1]
+    assert done_event["type"] == "done"
+    assert done_event["result"] == {
         "routed_to": ["knowledge"],
         "results": {"knowledge": {"content": "knowledge handled it", "citations": [], "requires_confirmation": False}},
     }
+
+
+def test_chat_streams_parallel_branch_events_for_a_multi_agent_fan_out():
+    store, token = _session_with_agents(
+        {"knowledge": FakeAgent("knowledge"), "database": FakeAgent("database")},
+        route_to=["knowledge", "database"],
+    )
+    app.dependency_overrides[get_session_store] = lambda: store
+
+    response = client.post(
+        "/chat", json={"message": "Compare docs to real numbers"}, headers={"Authorization": f"Bearer {token}"}
+    )
+
+    events = _parse_sse_events(response.text)
+    started = {e["agent"] for e in events if e["type"] == "agent_started"}
+    finished = {e["agent"] for e in events if e["type"] == "agent_finished"}
+    assert started == {"knowledge", "database"}
+    assert finished == {"knowledge", "database"}
+    assert events[-1]["type"] == "done"
 
 
 def test_chat_rejects_empty_message():

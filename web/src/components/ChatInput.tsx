@@ -1,11 +1,11 @@
 "use client";
 
-import { useState, type FormEvent } from "react";
+import { useState, type SubmitEvent } from "react";
 
 export function ChatInput({ disabled, onSend }: { disabled: boolean; onSend: (message: string) => void }) {
   const [value, setValue] = useState("");
 
-  function handleSubmit(event: FormEvent) {
+  function handleSubmit(event: SubmitEvent) {
     event.preventDefault();
     const trimmed = value.trim();
     if (!trimmed || disabled) return;

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from enterprise_ai.agents.knowledge.schemas import KnowledgeAnswer
-from enterprise_ai.core.agent import AgentResult
+from enterprise_ai.core.agent import AgentResult, OnEvent, emit_event
 from enterprise_ai.core.embedding_client import EmbeddingClient
 from enterprise_ai.core.llm_client import LLMClient
 from enterprise_ai.integrations.vector_store.pgvector_store import VectorStore
@@ -53,9 +53,19 @@ class KnowledgeAgent:
         self._top_k = top_k
         self._retrieval_floor = retrieval_floor
 
-    async def handle(self, user_request: str, history: list[dict] | None = None) -> AgentResult:
+    async def handle(
+        self, user_request: str, history: list[dict] | None = None, on_event: OnEvent | None = None
+    ) -> AgentResult:
+        emit_event(on_event, {"type": "tool_called", "agent": "knowledge", "tool": "embed_query"})
         query_embedding = await self._embedding_client.embed(user_request)
+        emit_event(on_event, {"type": "tool_result", "agent": "knowledge", "tool": "embed_query"})
+
+        emit_event(on_event, {"type": "tool_called", "agent": "knowledge", "tool": "search_documents"})
         chunks = await self._vector_store.query(embedding=query_embedding, top_k=self._top_k)
+        emit_event(
+            on_event,
+            {"type": "tool_result", "agent": "knowledge", "tool": "search_documents", "detail": f"{len(chunks)} chunk(s) found"},
+        )
 
         # retrieval_floor is a cheap sanity check only — "is there any real signal at all" —
         # not a per-chunk relevance filter (learnings.md #3 follow-up: a strict per-chunk floor
@@ -75,11 +85,13 @@ class KnowledgeAgent:
         history_text = _history_as_text(history)
         user_prompt = f"{history_text}Question: {user_request}\n\nContext:\n{context}"
 
+        emit_event(on_event, {"type": "tool_called", "agent": "knowledge", "tool": "generate_answer"})
         answer = await self._llm_client.get_structured_output(
             system_prompt=_SYSTEM_PROMPT,
             user_prompt=user_prompt,
             schema=KnowledgeAnswer,
         )
+        emit_event(on_event, {"type": "tool_result", "agent": "knowledge", "tool": "generate_answer"})
 
         return AgentResult(
             agent_name="knowledge",
