@@ -41,6 +41,19 @@ from enterprise_ai.orchestrator.orchestrator import Orchestrator
 from enterprise_ai.orchestrator.router import Router
 
 PERFORMANCE_STATE_FILE = Path(__file__).resolve().parent.parent.parent / "scripts" / "_performance_seed_state.json"
+# Render's Secret Files can't hold a nested path or a leading underscore (dashboard-enforced
+# filename rules), so a deploy provides this same file flat, always readable from /etc/secrets/
+# regardless of what name it was uploaded under — this is the deployed-environment equivalent of
+# PERFORMANCE_STATE_FILE above, which only ever exists on a local checkout.
+_PERFORMANCE_STATE_FILE_SECRET = Path("/etc/secrets/performance_seed_state.json")
+
+
+def _performance_state_file() -> Path | None:
+    if PERFORMANCE_STATE_FILE.exists():
+        return PERFORMANCE_STATE_FILE
+    if _PERFORMANCE_STATE_FILE_SECRET.exists():
+        return _PERFORMANCE_STATE_FILE_SECRET
+    return None
 
 
 class _UnseededPerformanceAgent:
@@ -117,8 +130,9 @@ async def build_shared_resources() -> SharedResources:
         llm_client=llm_client,
     )
 
-    if PERFORMANCE_STATE_FILE.exists():
-        sprint_calendar = json.loads(PERFORMANCE_STATE_FILE.read_text())["sprints"]
+    performance_state_file = _performance_state_file()
+    if performance_state_file is not None:
+        sprint_calendar = json.loads(performance_state_file.read_text())["sprints"]
         performance_agent: Agent = PerformanceAgent(
             llm_client=llm_client,
             jira_client=JiraClient(),
