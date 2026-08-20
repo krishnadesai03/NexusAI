@@ -26,7 +26,7 @@ from enterprise_ai.agents.communication.agent import CommunicationAgent
 from enterprise_ai.agents.database.agent import DatabaseAgent
 from enterprise_ai.agents.knowledge.agent import KnowledgeAgent
 from enterprise_ai.agents.performance.agent import PerformanceAgent
-from enterprise_ai.core.agent import Agent, AgentResult
+from enterprise_ai.core.agent import Agent, AgentResult, OnEvent
 from enterprise_ai.core.embedding_client import default_embedding_client
 from enterprise_ai.core.llm_client import LLMClient, default_llm_client
 from enterprise_ai.integrations.atlassian.bitbucket_client import BitbucketClient
@@ -48,7 +48,9 @@ class _UnseededPerformanceAgent:
     that hasn't run the Component 4 seeding scripts) — PerformanceAgent itself has no no-arg
     constructor to fall back to, since it genuinely needs real clients + a sprint calendar."""
 
-    async def handle(self, user_request: str, history: list[dict] | None = None) -> AgentResult:
+    async def handle(
+        self, user_request: str, history: list[dict] | None = None, on_event: OnEvent | None = None
+    ) -> AgentResult:
         return AgentResult(
             agent_name="performance",
             content="Performance data hasn't been seeded in this environment yet — run the "
@@ -61,7 +63,9 @@ class _UnseededDatabaseAgent:
     fresh checkout that hasn't run push_database_fixtures.py) — connecting would otherwise fail
     with an unhelpful Postgres auth error instead of a clear message."""
 
-    async def handle(self, user_request: str, history: list[dict] | None = None) -> AgentResult:
+    async def handle(
+        self, user_request: str, history: list[dict] | None = None, on_event: OnEvent | None = None
+    ) -> AgentResult:
         return AgentResult(
             agent_name="database",
             content="The company database hasn't been seeded in this environment yet — run "
@@ -74,7 +78,9 @@ class _UnseededCommunicationAgent:
     clients would otherwise fail with a raw KeyError instead of a clear message. Stateless (no
     pending action ever gets staged), so it's safe to share across every session."""
 
-    async def handle(self, user_request: str, history: list[dict] | None = None) -> AgentResult:
+    async def handle(
+        self, user_request: str, history: list[dict] | None = None, on_event: OnEvent | None = None
+    ) -> AgentResult:
         return AgentResult(
             agent_name="communication",
             content="Slack/email credentials haven't been configured in this environment yet — "
