@@ -25,6 +25,34 @@ who has never seen it before.
 - We made sure this "traffic cop" can only ever pick from a fixed list of real helpers — it
   can never invent a helper that doesn't exist. This makes it trustworthy.
 
+## How The Traffic Cop Is Actually Built (No Off-The-Shelf Toolkit)
+
+- There are ready-made "agent framework" toolkits (like LangGraph) that give you a lot of this
+  traffic-cop behavior for free. We deliberately didn't use one — everything below was built from
+  scratch using plain, ordinary programming building blocks.
+- **Picking helpers:** the small AI is asked "which helper(s) should handle this?", but its answer
+  is forced into a fixed list — it can never invent a helper that doesn't exist.
+- **Running helpers at the same time:** if two helpers are needed, the program starts both at once
+  and waits for both to finish — like sending two people to fetch two different things instead of
+  sending one, waiting for them to come back, then sending the other. This is one basic, built-in
+  programming feature, not a special library.
+- **Combining the answers:** whatever each helper found gets bundled together into one response
+  handed back to you.
+- **Remembering the conversation:** a short list of the last few things you asked and how they were
+  answered, kept only in the running program's memory — nothing fancy, and it disappears the moment
+  the program stops.
+- **Pausing before risky actions:** the one helper that can actually send something just remembers
+  "here's a draft I haven't sent yet" as a simple note. Nothing goes out until you click Send —
+  there's no special "pause the whole program" machinery behind it.
+- **Watching it work live:** as the traffic cop and helpers work, they each announce small updates
+  ("I picked these helpers," "this one just finished," "this one is now looking something up"). The
+  web page listens for these announcements and updates your screen as they happen, instead of just
+  showing a spinner until everything is done.
+- **The core idea:** every "smart" behavior a ready-made toolkit would hand you for free — running
+  things at once, remembering context, pausing for approval, showing live progress — was built here
+  with plain, ordinary code instead. It's more work to build, but there's no hidden machinery:
+  everything it does, there's an exact, readable piece of code that does it.
+
 ## Helper #1: The Document Reader (Knowledge Agent)
 
 - This helper answers questions using real company documents — like PTO policy, expense

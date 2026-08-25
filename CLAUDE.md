@@ -73,8 +73,28 @@ use fakes (`FakeLLMClient`, `FakeAgent`, etc.) — no network calls, no API key 
 
 Live, real-API smoke tests are separate one-off scripts under `scripts/` (not part of `pytest`),
 e.g. `scripts/smoke_test_llm.py` — these need `OPENAI_API_KEY` set and make real, billed calls.
+No such script exists yet for the web API (Component 9/10) — it's covered by `test_api.py`'s
+fakes only, never yet run live against a real `uvicorn` instance.
 
 No linter/formatter is configured yet.
+
+Run the web API + frontend locally (Component 9/10; needs the same `.env` as everything else,
+plus `APP_USERS_JSON` — generate an entry's hash with
+`.venv/Scripts/python.exe scripts/hash_password.py`):
+
+```bash
+.venv/Scripts/python.exe -m uvicorn api.main:app --reload --port 8000
+cd web && npm install && npm run dev   # separate terminal, serves http://localhost:3000
+```
+
+Run the evaluation harness (Component 11; real, billed OpenAI calls — needs `OPENAI_API_KEY` plus
+Postgres/Jira/Confluence/Bitbucket already seeded, same as the smoke tests):
+
+```bash
+.venv/Scripts/python.exe -m pip install -e ".[dev,eval]"
+.venv/Scripts/python.exe -m evaluation.run_knowledge_eval
+.venv/Scripts/python.exe -m evaluation.run_agent_eval
+```
 
 ## Architecture
 
@@ -152,17 +172,112 @@ results that return lists include a pre-computed `count` field rather than leavi
 the model — confirmed live that the LLM can correctly fetch the right data and still miscount it
 in prose (a well-known LLM weakness, not something a bigger model reliably fixes).
 
-**Current implementation status:** Components 0/0.5/1/3/4 implemented and verified (unit tests
-with fakes + live runs against real OpenAI/pgvector/Jira/Confluence/Bitbucket). Components 2,
-5–11 not started — `database` and `communication` agents are still stubs that echo a canned
-string. `scripts/chat.py` is a working interactive CLI entry point wired to the real orchestrator
-(real Knowledge + Performance Agents, two remaining stubs) — `build_orchestrator()` in that file
-is kept separate from the I/O loop so it can back a real API later without rewriting the wiring;
-it supports a `/citations` command to toggle whether agent metadata (e.g. citations) prints
-alongside answers, off by default. `evaluation/` and `api/` are still empty scaffolding — there
-is currently no automated eval suite for retrieval/generation quality or agent *behavioral*
-correctness (bugs like the ones above were only caught via manual live testing, not fakes) —
-a real, acknowledged gap.
+**Database Agent (Component 5, implemented)** — `agents/database/agent.py`. Same tool-calling
+loop as Performance Agent, but a single tool (`run_sql_query`) — SQL's own flexibility means one
+tool is enough. Three guardrail layers stack, in order of what actually matters: (1) the LLM's own
+instruction-following (usually refuses write requests without even calling the tool, but
+unenforced), (2) a deterministic regex pre-filter (`_validate_readonly_query` in
+`postgres_client.py`) that rejects non-`SELECT` text before it's sent, (3) a dedicated read-only
+Postgres role (`enterprise_ai_readonly`, `DATABASE_READONLY_URL`) — the one layer that's actually
+unbypassable, since it's enforced by Postgres itself, not application code. Schema is introspected
+live from `information_schema` at construction (not hardcoded), and includes real distinct values
+for low-cardinality text columns so the LLM doesn't guess spelling/capitalization — see
+`learnings.md` #5 for a live bug this exact gap caused (`'active'` vs. the real `'Active'`).
+
+**Communication Agent (Component 6) + Human-in-the-Loop (Component 8), both implemented** —
+`agents/communication/agent.py`. The one agent with a real side effect (Slack/email) instead of a
+read, so it gets two guardrails the read-only agents don't need. First, the LLM never controls the
+*destination*: `SlackClient` always posts to one fixed channel; `EmailClient` sends to one fixed
+recipient or one of 4 whitelisted per-person aliases that code (not the LLM) resolves to a real
+address. Second, nothing sends immediately — `handle()` only ever stages a pending draft;
+executing it requires a separate, explicit `confirm()` (or `cancel()`/`revise()`) call. This second
+capability lives on an optional `ConfirmableAgent` Protocol (`core/agent.py`), checked via
+`isinstance` at the call site rather than added to the base `Agent` Protocol, since the 3 read-only
+agents have nothing to confirm. `scripts/chat.py`'s `_drive_confirmation_menu()` drives this as a
+fixed 3-option menu (Send it / Edit / Cancel) — deliberately not free-text ("yes"/"confirm")
+matching, since a reasonable reply outside the expected phrase list would otherwise be
+misinterpreted.
+
+**Conversation memory (Component 7, implemented)** — `orchestrator/memory.py`. `ConversationMemory`
+lives on the `Orchestrator`, not per-agent, because routing can send consecutive turns to different
+agents — a per-agent history would silently lose continuity the moment that happens. It's a rolling,
+FIFO-trimmed window of the last 5 turns, threaded into whichever agent(s) the current turn routes to
+via an optional `history` param on `Agent.handle()` (default `None`, so every earlier single-turn
+call/test still works unchanged). Session-only, in-process — gone when the process exits, no
+persistence yet.
+
+**Shared wiring (`bootstrap.py`)** — the construction logic every entry point reuses, split in two:
+`build_shared_resources()` builds everything expensive and stateless exactly once per process (LLM/
+embedding clients, DB/vector-store connections, Router, and the Knowledge/Performance/Database
+Agents — none of which accumulate per-conversation state). `build_session_orchestrator()` is the
+cheap per-session slice — a fresh `ConversationMemory` and a fresh `CommunicationAgent`, since its
+staged-draft state (`self._pending`) can't be shared across sessions without one user's draft
+leaking into another's confirm click. `scripts/chat.py` calls both back-to-back for its one CLI
+session; the same two functions also back the real multi-session FastAPI backend in `api/` (see
+below). Each of Performance/Database/Communication Agent degrades to a small `_Unseeded*Agent`
+stub with a clear "not configured yet" message if its credentials or seed data aren't present,
+instead of failing process startup.
+
+**Web API & frontend (Component 9, implemented) + live trace streaming (Component 10,
+implemented).** A separate, top-level `api/` package (NOT `src/enterprise_ai/api/`, which is an
+empty placeholder left from Component 0.5's original scaffold — don't confuse the two) is a real,
+tested FastAPI backend: `api/main.py` (app + CORS + lifespan-managed `SharedResources` +
+normalized `{"error": ...}` responses), `api/auth.py` (bcrypt login against `APP_USERS_JSON`,
+bearer-token sessions, no signup endpoint by design), `api/chat.py` (`POST /chat`, streamed as
+Server-Sent Events), `api/pending.py` (`POST /pending/{confirm,cancel,revise}`, generic over any
+`ConfirmableAgent`), `api/sessions.py` (in-process token → `SessionState` store, 24h TTL),
+`api/dependencies.py` (FastAPI `Depends()` seams so tests can override without a real DB/LLM
+connection), `api/schemas.py`. A matching Next.js frontend lives in `web/` (login, streaming chat,
+a `PendingActionCard` driving the same 3-option HITL menu as `scripts/chat.py`'s CLI version, and a
+live `TracePanel`). Both sides are unit-tested together in `tests/unit/test_api.py` (16 tests via
+FastAPI's `TestClient` + fakes) — part of the 68/68 passing full suite.
+
+The streaming `/chat` response is powered by a live trace mechanism threaded through the whole
+orchestrator: `Agent.handle()` carries an optional third `on_event: OnEvent | None` callback
+(`core/agent.py`; `OnEvent = Callable[[dict], None]`, backward-compatible default `None`, same
+pattern as `history`), fired by `Orchestrator` and every agent's tool-calling loop as routing/
+tool-call steps actually happen (`routing_decided`, `agent_started`/`agent_finished`,
+`tool_called`/`tool_result`, `done`/`error`). `api/chat.py` is the one real consumer today — it
+turns those callbacks into an SSE stream the frontend's `TracePanel` renders live.
+
+**Deployed (Component 13, implemented)** — backend on Render
+(`https://nexusai-api-ctud.onrender.com`, `GET /health` → `{"status":"ok"}`), frontend on Vercel
+(`https://nexus-ai-sand-nine.vercel.app`), both confirmed live via direct `curl`. Configured
+through each platform's dashboard, not committed IaC — no `render.yaml`/`vercel.json`/`Dockerfile`/
+`Procfile` exist in the repo. The Render free tier cold-starts after idle (a `503` with
+`Retry-After` on the first request, resolving on retry) — expected, not a broken deploy.
+`bootstrap.py`'s `_PERFORMANCE_STATE_FILE_SECRET` fallback exists specifically for Render's Secret
+File mechanism. **Still open:** no live smoke test has exercised the actual login → chat → HITL
+flow against these deployed URLs (only `/health`/`/login` have been spot-checked), and there's no
+CI/CD beyond each platform's own git-push auto-deploy.
+
+**What's still genuinely missing here:** no live smoke test for the API (every other integration in
+this project has one under `scripts/`; this doesn't yet, deployed or local).
+
+**Evaluation harness (Component 11, implemented)** — a top-level `evaluation/` package (same
+top-level-package precedent as `api/`; `src/enterprise_ai/evaluation/` is an unused Component 0.5
+scaffold), using **DeepEval**: `evaluation/run_knowledge_eval.py` runs the full RAG metric set
+(`ContextualPrecisionMetric`/`ContextualRecallMetric`/`FaithfulnessMetric`/`AnswerRelevancyMetric`)
+against Knowledge Agent; `evaluation/run_agent_eval.py` runs `GEval` LLM-judge correctness (plus a
+deterministic citation-substring check for Performance Agent) against Performance and Database
+Agents. Both scripts build their golden datasets (`evaluation/datasets/*.py`) as a **regression
+suite from this file's own real, previously-documented bugs** — e.g. the client-meals
+category-overlap case, the billing-commit miscount, the `'active'`/`'Active'` capitalization bug —
+so a fix staying fixed is verified automatically, not just once by hand. Live-verified: Knowledge
+7/8 cases passed all 4 RAG metrics (the one failure is a genuine Faithfulness-metric nuance, not a
+defect — see `learnings.md` #11); Performance+Database 9/9 GEval correctness cases passed 100%.
+Real agentic tracing (`ToolCorrectnessMetric`/`TaskCompletionMetric`, which need DeepEval's
+`@observe` instrumentation) is a documented future upgrade, not built — same deferral pattern as
+Component 4's MCP gap.
+
+**Current implementation status:** Components 0/0.5/1/3/4/5/6/7/8/9/10/11/13 implemented (9 and 10
+unit-tested but not yet verified live end-to-end against real dependencies, unlike every earlier
+component — see above; 13 is live-deployed and spot-checked but not exercised end-to-end either;
+11 is live-verified). Component 2 (orchestration framework/library choice) is decided, not just
+deferred: stay hand-rolled `asyncio`, no LangGraph/Ray migration, unless a concrete requirement
+(durable/resumable workflows, genuinely cyclic control flow) actually demands it — see
+`learnings.md` #2 for the full rationale. Caching & latency optimization (12) is not started — the
+only real remaining gap.
 
 One maintenance note for whoever adds the next agent: `Router._SYSTEM_PROMPT`
 (`orchestrator/router.py`) must keep each agent's domain description mutually exclusive. A real
