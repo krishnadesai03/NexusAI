@@ -40,7 +40,7 @@ async def login(
     ):
         raise HTTPException(status_code=401, detail="Invalid email or password.")
 
-    orchestrator = build_session_orchestrator(shared)
+    orchestrator = build_session_orchestrator(shared, user_display_name=user["display_name"])
     session = session_store.create(
         email=user["email"], display_name=user["display_name"], orchestrator=orchestrator
     )

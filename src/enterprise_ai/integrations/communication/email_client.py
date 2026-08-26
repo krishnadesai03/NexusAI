@@ -4,6 +4,7 @@ import asyncio
 import os
 import re
 import smtplib
+import socket
 from email.message import EmailMessage
 
 # The 4 synthetic employees reused from Component 4 (learnings.md #4/#6) — each has a real,
@@ -14,6 +15,21 @@ from email.message import EmailMessage
 KNOWN_RECIPIENT_ALIASES = frozenset({"priyanair", "marcuschen", "jordanlee", "sofiareyes"})
 
 _ALIAS_PATTERN = re.compile(r"^[A-Za-z0-9._-]+$")
+
+
+class _IPv4SMTP(smtplib.SMTP):
+    """Identical to smtplib.SMTP except the initial connection is forced over IPv4. Some hosting
+    platforms (Render's containers, confirmed live) resolve smtp.gmail.com's IPv6 (AAAA) address
+    but have no outbound IPv6 route, failing with "[Errno 101] Network is unreachable" even
+    though IPv4 works fine. Overriding only the connect step (not the hostname itself) means
+    starttls()'s certificate/SNI check — which uses the hostname captured by the base class's
+    connect(), unaffected by this override — still verifies against the real "smtp.gmail.com",
+    so this doesn't weaken TLS."""
+
+    def _get_socket(self, host: str, port: int, timeout: float):
+        addr_info = socket.getaddrinfo(host, port, socket.AF_INET, socket.SOCK_STREAM)
+        ipv4_host, ipv4_port = addr_info[0][4][:2]
+        return super()._get_socket(ipv4_host, ipv4_port, timeout)
 
 
 class InvalidRecipientAliasError(ValueError):
@@ -65,7 +81,7 @@ class EmailClient:
         message["To"] = to_address
         message.set_content(body)
 
-        with smtplib.SMTP(self._smtp_host, self._smtp_port) as smtp:
+        with _IPv4SMTP(self._smtp_host, self._smtp_port) as smtp:
             smtp.starttls()
             smtp.login(self._username, self._app_password)
             smtp.send_message(message)

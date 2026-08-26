@@ -178,10 +178,15 @@ async def build_shared_resources() -> SharedResources:
     )
 
 
-def build_session_orchestrator(shared: SharedResources) -> Orchestrator:
+def build_session_orchestrator(shared: SharedResources, user_display_name: str | None = None) -> Orchestrator:
     """Cheap, no I/O — safe to call once per login. Every agent except communication is shared
     directly from `shared`; communication gets a fresh instance so `self._pending` (the staged
-    HITL draft) is isolated per session, same reasoning as ConversationMemory below."""
+    HITL draft) is isolated per session, same reasoning as ConversationMemory below.
+
+    `user_display_name` (the real logged-in user's name, from APP_USERS_JSON via api/auth.py)
+    lets CommunicationAgent sign drafted emails with an actual name instead of a placeholder like
+    "[Your Name]" — optional since callers without a real login session (scripts/chat.py) have no
+    name to provide."""
 
     if shared.communication_clients is not None:
         comm_llm, slack_client, email_client = shared.communication_clients
@@ -189,6 +194,7 @@ def build_session_orchestrator(shared: SharedResources) -> Orchestrator:
             llm_client=comm_llm,
             slack_client=slack_client,
             email_client=email_client,
+            user_display_name=user_display_name,
         )
     else:
         communication_agent = _UnseededCommunicationAgent()
