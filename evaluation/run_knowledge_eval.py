@@ -13,6 +13,14 @@ mirroring exactly what the agent does internally, to get chunk text for DeepEval
 `retrieval_context` field. This is additive only — zero production code changes — and has the side
 benefit of cleanly separating "did retrieval work" from "did generation work," which is what RAG
 eval is supposed to distinguish.
+
+Model-agnostic ranking metrics (Recall@k, MRR): in addition to DeepEval's LLM-judged
+ContextualPrecision/ContextualRecall, this script also computes classic retrieval-ranking metrics
+directly off the embedding similarity ordering — no LLM judge call involved, pure math over
+`vector_store.query()` results. For each golden case with a known `expected_source_doc`, it finds
+the rank (1-indexed) of the first retrieved chunk belonging to that doc among the top
+RETRIEVAL_K results, then reports Recall@1/@3/@5 (did the expected doc appear in the top 1/3/5)
+and MRR (mean of 1/rank across all cases, 0 if not found in top RETRIEVAL_K).
 """
 
 from __future__ import annotations
@@ -31,6 +39,8 @@ if sys.platform == "win32":
     sys.stderr.reconfigure(encoding="utf-8")
 
 ROOT = Path(__file__).resolve().parent.parent
+
+RETRIEVAL_K = 5
 
 
 def _load_dotenv(path: Path) -> None:
@@ -62,6 +72,7 @@ async def main() -> None:
     embedding_client = default_embedding_client()
 
     test_cases = []
+    ranks: list[int | None] = []  # 1-indexed rank of expected doc's first chunk, None if not in top RETRIEVAL_K
     print("=== Knowledge Agent eval: deterministic checks (retrieval/answer_found) ===\n")
 
     for case in KNOWLEDGE_GOLDEN_CASES:
@@ -93,18 +104,35 @@ async def main() -> None:
             continue
 
         query_embedding = await embedding_client.embed(question)
-        chunks = await shared.vector_store.query(embedding=query_embedding, top_k=3)
+        ranked_chunks = await shared.vector_store.query(embedding=query_embedding, top_k=RETRIEVAL_K)
+
+        rank = next(
+            (i for i, chunk in enumerate(ranked_chunks, start=1) if chunk.doc_id.startswith(expected_doc)),
+            None,
+        )
+        ranks.append(rank)
+        print(f"  expected doc rank in top {RETRIEVAL_K}: {rank if rank is not None else f'not found (> {RETRIEVAL_K})'}")
+        print()
 
         test_cases.append(
             LLMTestCase(
                 input=question,
                 actual_output=result.content,
                 expected_output=case["expected_output"],
-                retrieval_context=[chunk.text for chunk in chunks],
+                retrieval_context=[chunk.text for chunk in ranked_chunks[:3]],
             )
         )
 
     await close_shared_resources(shared)
+
+    print("=== Knowledge Agent eval: model-agnostic ranking metrics (embedding similarity only, no LLM judge) ===\n")
+    n = len(ranks)
+    for k in (1, 3, 5):
+        hits = sum(1 for r in ranks if r is not None and r <= k)
+        print(f"  Recall@{k}: {hits}/{n} ({hits / n:.0%})")
+    mrr = sum((1 / r) if r is not None else 0.0 for r in ranks) / n
+    print(f"  MRR:       {mrr:.3f}")
+    print()
 
     print("=== Knowledge Agent eval: DeepEval RAG metrics ===\n")
     evaluate(
