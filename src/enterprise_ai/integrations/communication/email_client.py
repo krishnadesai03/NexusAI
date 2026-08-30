@@ -1,35 +1,25 @@
 from __future__ import annotations
 
-import asyncio
 import os
 import re
-import smtplib
-import socket
-from email.message import EmailMessage
+
+import httpx
 
 # The 4 synthetic employees reused from Component 4 (learnings.md #4/#6) — each has a real,
 # reachable test address of the form "<base-local>+<alias>@<base-domain>", built from the same
-# authenticated account that sends the mail. Keeping this as a whitelist (not just a charset
-# check) means a hallucinated alias for someone who isn't one of these 4 fails loudly as a tool
-# error instead of silently landing on an address nobody was actually asking to reach.
+# verified sending address. Keeping this as a whitelist (not just a charset check) means a
+# hallucinated alias for someone who isn't one of these 4 fails loudly as a tool error instead of
+# silently landing on an address nobody was actually asking to reach.
 KNOWN_RECIPIENT_ALIASES = frozenset({"priyanair", "marcuschen", "jordanlee", "sofiareyes"})
 
 _ALIAS_PATTERN = re.compile(r"^[A-Za-z0-9._-]+$")
 
+_RESEND_SEND_URL = "https://api.resend.com/emails"
 
-class _IPv4SMTP(smtplib.SMTP):
-    """Identical to smtplib.SMTP except the initial connection is forced over IPv4. Some hosting
-    platforms (Render's containers, confirmed live) resolve smtp.gmail.com's IPv6 (AAAA) address
-    but have no outbound IPv6 route, failing with "[Errno 101] Network is unreachable" even
-    though IPv4 works fine. Overriding only the connect step (not the hostname itself) means
-    starttls()'s certificate/SNI check — which uses the hostname captured by the base class's
-    connect(), unaffected by this override — still verifies against the real "smtp.gmail.com",
-    so this doesn't weaken TLS."""
 
-    def _get_socket(self, host: str, port: int, timeout: float):
-        addr_info = socket.getaddrinfo(host, port, socket.AF_INET, socket.SOCK_STREAM)
-        ipv4_host, ipv4_port = addr_info[0][4][:2]
-        return super()._get_socket(ipv4_host, ipv4_port, timeout)
+class EmailSendError(RuntimeError):
+    """Raised when Resend's API itself reports failure (non-2xx response) — mirrors
+    SlackClient's SlackSendError pattern (learnings.md #6)."""
 
 
 class InvalidRecipientAliasError(ValueError):
@@ -38,28 +28,30 @@ class InvalidRecipientAliasError(ValueError):
 
 
 class EmailClient:
-    """Sends email to a fixed, pre-approved test account (learnings.md #6). The LLM never
-    supplies a full address — at most it supplies a `recipient_alias` for one of the 4 known
-    synthetic employees, which this class combines with the *authenticated* SMTP account's own
-    local-part/domain to build "<local>+<alias>@<domain>". Every possible resulting address is
-    therefore still an alias of the same real mailbox this agent is authenticated as — there is
-    no way to construct an address on a different domain or a different base account, so this
-    preserves the original guardrail (can never reach a real external person) while allowing
-    per-person addressing among the 4 known synthetic employees."""
+    """Sends email via Resend's HTTP API (learnings.md #12 follow-up), not raw SMTP.
+
+    SMTP was the original implementation, but live testing on Render surfaced a real bug: the
+    outbound SMTP connection to smtp.gmail.com hung indefinitely with no error — Render (like
+    many PaaS hosts) restricts/drops outbound SMTP traffic rather than refusing it outright, so
+    the connection attempt never completed or failed, it just blocked the request forever. A
+    plain HTTPS POST — the same transport SlackClient already uses successfully on this same
+    host — sidesteps the problem entirely, since it isn't a restricted port/protocol.
+
+    The LLM never supplies a full address — at most it supplies a `recipient_alias` for one of
+    the 4 known synthetic employees, which this class combines with the *verified sending*
+    address's local-part/domain to build "<local>+<alias>@<domain>". Every possible resulting
+    address is therefore still an alias of the same real mailbox this agent sends as — there is
+    no way to construct an address on a different domain or a different base account, preserving
+    the original guardrail (can never reach a real external person) while allowing per-person
+    addressing among the 4 known synthetic employees."""
 
     def __init__(
         self,
-        smtp_host: str | None = None,
-        smtp_port: int | None = None,
-        username: str | None = None,
-        app_password: str | None = None,
+        api_key: str | None = None,
         from_address: str | None = None,
         recipient: str | None = None,
     ) -> None:
-        self._smtp_host = smtp_host or os.environ["EMAIL_SMTP_HOST"]
-        self._smtp_port = smtp_port or int(os.environ["EMAIL_SMTP_PORT"])
-        self._username = username or os.environ["EMAIL_SMTP_USERNAME"]
-        self._app_password = app_password or os.environ["EMAIL_SMTP_APP_PASSWORD"]
+        self._api_key = api_key or os.environ["RESEND_API_KEY"]
         self._from_address = from_address or os.environ["EMAIL_FROM_ADDRESS"]
         self._recipient = recipient or os.environ["EMAIL_TEST_RECIPIENT"]
 
@@ -71,22 +63,18 @@ class EmailClient:
                 f"{recipient_alias!r} is not a known recipient alias. Valid aliases: "
                 f"{sorted(KNOWN_RECIPIENT_ALIASES)}."
             )
-        local, domain = self._username.split("@", 1)
+        local, domain = self._from_address.split("@", 1)
         return f"{local}+{recipient_alias}@{domain}"
-
-    def _send_sync(self, subject: str, body: str, to_address: str) -> None:
-        message = EmailMessage()
-        message["Subject"] = subject
-        message["From"] = self._from_address
-        message["To"] = to_address
-        message.set_content(body)
-
-        with _IPv4SMTP(self._smtp_host, self._smtp_port, timeout=10) as smtp:
-            smtp.starttls()
-            smtp.login(self._username, self._app_password)
-            smtp.send_message(message)
 
     async def send_email(self, subject: str, body: str, recipient_alias: str | None = None) -> dict:
         to_address = self._resolve_recipient(recipient_alias)
-        await asyncio.to_thread(self._send_sync, subject, body, to_address)
-        return {"to": to_address, "subject": subject}
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                _RESEND_SEND_URL,
+                headers={"Authorization": f"Bearer {self._api_key}"},
+                json={"from": self._from_address, "to": [to_address], "subject": subject, "text": body},
+            )
+        if resp.is_error:
+            raise EmailSendError(f"Resend API rejected the email ({resp.status_code}): {resp.text}")
+        payload = resp.json()
+        return {"to": to_address, "subject": subject, "id": payload.get("id")}
