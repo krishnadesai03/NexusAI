@@ -59,7 +59,7 @@ class FakeAgent:
     def __init__(self, name: str):
         self._name = name
 
-    async def handle(self, user_request: str, history: list[dict] | None = None, on_event=None) -> AgentResult:
+    async def handle(self, user_request: str, history: list[dict] | None = None, on_event=None, tool_cache=None) -> AgentResult:
         return AgentResult(agent_name=self._name, content=f"{self._name} handled it")
 
 
@@ -70,7 +70,7 @@ class FakeConfirmableAgent:
     def __init__(self):
         self._pending = False
 
-    async def handle(self, user_request: str, history: list[dict] | None = None, on_event=None) -> AgentResult:
+    async def handle(self, user_request: str, history: list[dict] | None = None, on_event=None, tool_cache=None) -> AgentResult:
         self._pending = True
         return AgentResult(
             agent_name="communication",

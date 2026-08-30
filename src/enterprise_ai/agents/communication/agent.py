@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from enterprise_ai.core.agent import AgentResult, OnEvent
 from enterprise_ai.core.llm_client import LLMClient, ToolResponse
 from enterprise_ai.core.llm_retry import LLMUnavailableError, call_tool_with_retry
+from enterprise_ai.core.tool_cache import ToolCache
 from enterprise_ai.integrations.communication.email_client import EmailClient
 from enterprise_ai.integrations.communication.slack_client import SlackClient
 
@@ -171,11 +172,16 @@ class CommunicationAgent:
         )
 
     async def handle(
-        self, user_request: str, history: list[dict] | None = None, on_event: OnEvent | None = None
+        self,
+        user_request: str,
+        history: list[dict] | None = None,
+        on_event: OnEvent | None = None,
+        tool_cache: ToolCache | None = None,
     ) -> AgentResult:
         # on_event accepted for Agent protocol conformance but unused here — handle() only ever
         # stages a draft (an LLM decision, not a tool execution); the actual send happens later
-        # in confirm_pending(), outside the traced /chat request entirely.
+        # in confirm_pending(), outside the traced /chat request entirely. tool_cache is likewise
+        # accepted-but-unused — nothing here is a cacheable read (see Component 12 in CLAUDE.md).
         messages = [
             {"role": "system", "content": self._system_prompt},
             *(history or []),

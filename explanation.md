@@ -258,23 +258,24 @@ enough to catch everything — there's no second door it could have gone through
   something in the real world. The other three only ever answer questions, so there's nothing
   for them to pause and check with you about.
 
-## What's Done So Far
+## Optimization
 
-- The traffic cop that routes questions to the right helper — working and tested.
-- The document reader helper — working and tested with real company-style documents.
-- The work activity reader helper — working and tested with the pretend company's data.
-- The database reader helper — working and tested with a pretend company database.
-- The messenger helper — working and tested with a real Slack workspace and real email, and now
-  always pauses for your confirmation before it actually sends anything.
-- All four helpers give honest answers and admit when they don't know something, and the
-  messenger never sends anywhere it isn't explicitly allowed to.
-- The whole system now remembers the last few exchanges of a conversation, so follow-up
-  questions actually work.
+- When one question needed several different lookups at once (like checking tickets, code
+  commits, and notes all for one comparison), the helper used to do them one at a time, waiting
+  for each to finish before starting the next. Now it starts all of them at the same time and
+  waits only for the slowest one, instead of adding up every wait one after another.
+- The work-activity and database helpers now remember what they already looked up earlier in the
+  same conversation. So if a follow-up question needs the same information again, it reuses what
+  it already found instead of looking it up all over again from scratch.
 
-## What's Left To Build
+## Future Scope
 
-- There's no automatic way yet to catch every mistake — most problems so far were found by
-  manually asking tricky questions and checking the answers by hand.
-- A simple website interface hasn't been built yet — right now it only works through a
-  typed chat window.
+- The evaluation steps described above only ran once, by hand, against a fixed set of example
+  questions for three of the four helpers — there's no automatic check yet that re-runs those
+  tests on every future change and flags a new mistake the moment it's introduced.
+- A simple website version has been built and put online, but nobody has walked through the whole
+  real flow — logging in, asking a question, watching the answer stream in, confirming a send —
+  from an actual browser against the live version yet. Only quick spot-checks have been done there
+  so far.
 - Memory doesn't survive closing the program yet — it only lasts for one running session.
+- Caching the user questions (related to Database agent only) and their SQL to save cost on 1 LLM call.

@@ -4,6 +4,7 @@ from enterprise_ai.agents.knowledge.schemas import KnowledgeAnswer
 from enterprise_ai.core.agent import AgentResult, OnEvent, emit_event
 from enterprise_ai.core.embedding_client import EmbeddingClient
 from enterprise_ai.core.llm_client import LLMClient
+from enterprise_ai.core.tool_cache import ToolCache
 from enterprise_ai.integrations.vector_store.pgvector_store import VectorStore
 
 _SYSTEM_PROMPT = """You are the Knowledge Agent of an internal company assistant. Answer the
@@ -54,8 +55,14 @@ class KnowledgeAgent:
         self._retrieval_floor = retrieval_floor
 
     async def handle(
-        self, user_request: str, history: list[dict] | None = None, on_event: OnEvent | None = None
+        self,
+        user_request: str,
+        history: list[dict] | None = None,
+        on_event: OnEvent | None = None,
+        tool_cache: ToolCache | None = None,
     ) -> AgentResult:
+        # tool_cache accepted for Agent protocol conformance but unused — Component 12's caching
+        # targets PerformanceAgent/DatabaseAgent's external reads, not embedding+retrieval.
         emit_event(on_event, {"type": "tool_called", "agent": "knowledge", "tool": "embed_query"})
         query_embedding = await self._embedding_client.embed(user_request)
         emit_event(on_event, {"type": "tool_result", "agent": "knowledge", "tool": "embed_query"})

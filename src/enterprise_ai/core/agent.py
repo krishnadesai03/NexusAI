@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable, Protocol, runtime_checkable
 
+from enterprise_ai.core.tool_cache import ToolCache
+
 # Live orchestration-trace callback (Component 10 / learnings.md): fired synchronously by
 # Orchestrator and each agent as routing/tool-call steps actually happen, so a caller (the web
 # API's SSE endpoint) can stream them to a client in real time. Plain dicts, not a typed schema —
@@ -36,10 +38,18 @@ class Agent(Protocol):
     supplied by Orchestrator's ConversationMemory — None/empty on a session's first turn.
     Optional so existing single-turn callers/tests keep working unchanged.
 
-    `on_event` is the live-trace callback described above — also optional for the same reason."""
+    `on_event` is the live-trace callback described above — also optional for the same reason.
+
+    `tool_cache` is the session-scoped read-cache (Component 12) — supplied by Orchestrator,
+    same optional/default-None treatment. Only PerformanceAgent/DatabaseAgent actually use it
+    (their tool calls are cacheable external reads); the other agents ignore it."""
 
     async def handle(
-        self, user_request: str, history: list[dict] | None = None, on_event: OnEvent | None = None
+        self,
+        user_request: str,
+        history: list[dict] | None = None,
+        on_event: OnEvent | None = None,
+        tool_cache: ToolCache | None = None,
     ) -> AgentResult: ...
 
 

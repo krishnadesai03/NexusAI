@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import asyncio
+import time
+
 from enterprise_ai.agents.database.agent import MAX_TOOL_ITERATIONS, DatabaseAgent
 from enterprise_ai.core.llm_client import ToolCall, ToolResponse
 from enterprise_ai.core.llm_retry import LLM_CALL_MAX_ATTEMPTS
+from enterprise_ai.core.tool_cache import ToolCache
 
 SCHEMA_DESCRIPTION = "\nTable: company_data.employees\n  id (integer)\n  name (text)\n  salary (numeric)"
 
@@ -49,6 +53,19 @@ class FakeDbClient:
         self.queries.append(sql)
         if self._raise_error:
             raise self._raise_error
+        return self._result
+
+
+class SlowDbClient:
+    """Sleeps before returning, so tests can prove queries in one turn run concurrently rather
+    than one-at-a-time — see test_independent_queries_in_one_turn_run_concurrently."""
+
+    def __init__(self, delay: float, result=None):
+        self._delay = delay
+        self._result = result if result is not None else {"row_count": 0, "truncated": False, "rows": []}
+
+    async def run_query(self, sql: str) -> dict:
+        await asyncio.sleep(self._delay)
         return self._result
 
 
@@ -171,3 +188,72 @@ async def test_emits_tool_called_and_tool_result_events_for_the_live_trace():
     assert events[1]["type"] == "tool_result"
     assert events[1]["agent"] == "database"
     assert events[1]["tool"] == "run_sql_query"
+
+
+async def test_independent_queries_in_one_turn_run_concurrently():
+    delay = 0.05
+    db = SlowDbClient(delay=delay)
+    llm = FakeLLMClient(
+        [
+            ToolResponse(
+                content=None,
+                tool_calls=[
+                    ToolCall(id="call_1", name="run_sql_query", arguments={"sql": "SELECT 1"}),
+                    ToolCall(id="call_2", name="run_sql_query", arguments={"sql": "SELECT 2"}),
+                ],
+            ),
+            ToolResponse(content="Combined answer."),
+        ]
+    )
+    agent = _make_agent(llm, db_client=db)
+
+    start = time.monotonic()
+    await agent.handle("run two queries")
+    elapsed = time.monotonic() - start
+
+    # Sequential execution would take >= 2 * delay; concurrent execution takes ~1 * delay.
+    assert elapsed < delay * 1.5
+
+
+async def test_tool_cache_avoids_rerunning_an_identical_query_within_a_session():
+    sql = "SELECT name, salary FROM company_data.employees WHERE name = 'Priya Nair'"
+    db = FakeDbClient(result={"row_count": 1, "truncated": False, "rows": [{"name": "Priya Nair", "salary": 71100.0}]})
+    llm = FakeLLMClient(
+        [
+            ToolResponse(content=None, tool_calls=[ToolCall(id="call_1", name="run_sql_query", arguments={"sql": sql})]),
+            ToolResponse(content="First answer."),
+            ToolResponse(content=None, tool_calls=[ToolCall(id="call_2", name="run_sql_query", arguments={"sql": sql})]),
+            ToolResponse(content="Second answer, reusing the cached query."),
+        ]
+    )
+    agent = _make_agent(llm, db_client=db)
+    tool_cache = ToolCache()
+
+    first = await agent.handle("what is Priya Nair's salary?", tool_cache=tool_cache)
+    second = await agent.handle("and her department?", tool_cache=tool_cache)
+
+    assert first.content == "First answer."
+    assert second.content == "Second answer, reusing the cached query."
+    # only one real query reached the DB client — the second was served from the session cache
+    assert db.queries == [sql]
+    # citations are still correct on the cache-hit path, not lost
+    assert second.metadata["citations"] == [sql]
+
+
+async def test_no_tool_cache_means_every_query_reruns():
+    sql = "SELECT name, salary FROM company_data.employees WHERE name = 'Priya Nair'"
+    db = FakeDbClient(result={"row_count": 1, "truncated": False, "rows": [{"name": "Priya Nair", "salary": 71100.0}]})
+    llm = FakeLLMClient(
+        [
+            ToolResponse(content=None, tool_calls=[ToolCall(id="call_1", name="run_sql_query", arguments={"sql": sql})]),
+            ToolResponse(content="First answer."),
+            ToolResponse(content=None, tool_calls=[ToolCall(id="call_2", name="run_sql_query", arguments={"sql": sql})]),
+            ToolResponse(content="Second answer."),
+        ]
+    )
+    agent = _make_agent(llm, db_client=db)
+
+    await agent.handle("what is Priya Nair's salary?")
+    await agent.handle("and her department?")
+
+    assert db.queries == [sql, sql]

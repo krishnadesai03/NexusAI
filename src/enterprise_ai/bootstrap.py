@@ -5,8 +5,11 @@ backend in api/). Split into two halves on purpose:
   clients, the LLM/embedding clients) and everything *stateless* (KnowledgeAgent, PerformanceAgent,
   DatabaseAgent, Router — none of these accumulate any per-conversation state; `history` is always
   passed in as a parameter, never stored on the instance). Built exactly once per process.
-- `build_session_orchestrator()` — the per-session slice: a fresh `ConversationMemory` and a fresh
-  `CommunicationAgent`. CommunicationAgent is the one agent that isn't stateless (`self._pending`),
+- `build_session_orchestrator()` — the per-session slice: a fresh `ConversationMemory`, a fresh
+  `ToolCache` (Component 12 — memoizes PerformanceAgent/DatabaseAgent's read-only tool calls for
+  the lifetime of one session, so a follow-up question that needs data already fetched this
+  conversation doesn't re-hit Jira/Confluence/Bitbucket/Postgres), and a fresh `CommunicationAgent`.
+  CommunicationAgent is the one agent that isn't stateless (`self._pending`),
   so it cannot be shared across sessions — two employees sharing one instance would let one
   person's staged Slack/email draft leak into another's confirm/cancel click. This function is
   cheap (no I/O) and is meant to be called once per login, not once per process.
@@ -29,6 +32,7 @@ from enterprise_ai.agents.performance.agent import PerformanceAgent
 from enterprise_ai.core.agent import Agent, AgentResult, OnEvent
 from enterprise_ai.core.embedding_client import default_embedding_client
 from enterprise_ai.core.llm_client import LLMClient, default_llm_client
+from enterprise_ai.core.tool_cache import ToolCache
 from enterprise_ai.integrations.atlassian.bitbucket_client import BitbucketClient
 from enterprise_ai.integrations.atlassian.confluence_client import ConfluenceClient
 from enterprise_ai.integrations.atlassian.jira_client import JiraClient
@@ -62,7 +66,11 @@ class _UnseededPerformanceAgent:
     constructor to fall back to, since it genuinely needs real clients + a sprint calendar."""
 
     async def handle(
-        self, user_request: str, history: list[dict] | None = None, on_event: OnEvent | None = None
+        self,
+        user_request: str,
+        history: list[dict] | None = None,
+        on_event: OnEvent | None = None,
+        tool_cache: ToolCache | None = None,
     ) -> AgentResult:
         return AgentResult(
             agent_name="performance",
@@ -77,7 +85,11 @@ class _UnseededDatabaseAgent:
     with an unhelpful Postgres auth error instead of a clear message."""
 
     async def handle(
-        self, user_request: str, history: list[dict] | None = None, on_event: OnEvent | None = None
+        self,
+        user_request: str,
+        history: list[dict] | None = None,
+        on_event: OnEvent | None = None,
+        tool_cache: ToolCache | None = None,
     ) -> AgentResult:
         return AgentResult(
             agent_name="database",
@@ -92,7 +104,11 @@ class _UnseededCommunicationAgent:
     pending action ever gets staged), so it's safe to share across every session."""
 
     async def handle(
-        self, user_request: str, history: list[dict] | None = None, on_event: OnEvent | None = None
+        self,
+        user_request: str,
+        history: list[dict] | None = None,
+        on_event: OnEvent | None = None,
+        tool_cache: ToolCache | None = None,
     ) -> AgentResult:
         return AgentResult(
             agent_name="communication",
@@ -206,7 +222,7 @@ def build_session_orchestrator(shared: SharedResources, user_display_name: str |
         "communication": communication_agent,
     }
 
-    return Orchestrator(router=shared.router, agents=agents, memory=ConversationMemory())
+    return Orchestrator(router=shared.router, agents=agents, memory=ConversationMemory(), tool_cache=ToolCache())
 
 
 async def close_shared_resources(shared: SharedResources) -> None:

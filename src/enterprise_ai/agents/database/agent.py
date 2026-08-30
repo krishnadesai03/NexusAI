@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import json
 
 from enterprise_ai.core.agent import AgentResult, OnEvent, emit_event
 from enterprise_ai.core.llm_client import LLMClient
 from enterprise_ai.core.llm_retry import LLMUnavailableError, call_tool_with_retry
+from enterprise_ai.core.tool_cache import ToolCache
 from enterprise_ai.integrations.sql_db.postgres_client import PostgresQueryClient
 
 MAX_TOOL_ITERATIONS = 8
@@ -73,7 +75,11 @@ class DatabaseAgent:
         self._schema_description = schema_description
 
     async def handle(
-        self, user_request: str, history: list[dict] | None = None, on_event: OnEvent | None = None
+        self,
+        user_request: str,
+        history: list[dict] | None = None,
+        on_event: OnEvent | None = None,
+        tool_cache: ToolCache | None = None,
     ) -> AgentResult:
         messages = [
             {"role": "system", "content": _build_system_prompt(self._schema_description)},
@@ -115,15 +121,34 @@ class DatabaseAgent:
                 }
             )
 
-            for tc in response.tool_calls:
+            # Multiple queries requested in one turn are independent, so run them concurrently
+            # (Component 12) rather than one-at-a-time. A query's result is cached by its exact
+            # SQL text (session-scoped, via ToolCache) so re-asking a question that needs the
+            # same query within one conversation — e.g. "how many bugs did X resolve in sprint
+            # 12" then "what were they about?" — doesn't re-hit Postgres for data already fetched.
+            # Errors are never cached, so a corrected retry always runs for real.
+            async def _run_one(tc):
                 sql = tc.arguments.get("sql", "")
-                emit_event(on_event, {"type": "tool_called", "agent": "database", "tool": "run_sql_query", "detail": sql})
+                cached = tool_cache.get("run_sql_query", {"sql": sql}) if tool_cache is not None else ToolCache.MISSING
+                if cached is not ToolCache.MISSING:
+                    citations.append(sql)
+                    return cached
                 try:
                     result = await self._db_client.run_query(sql)
                     citations.append(sql)
-                    payload = result
+                    if tool_cache is not None:
+                        tool_cache.set("run_sql_query", {"sql": sql}, result)
+                    return result
                 except Exception as exc:  # noqa: BLE001 — feed the real error back so the LLM can retry
-                    payload = {"error": str(exc)}
+                    return {"error": str(exc)}
+
+            for tc in response.tool_calls:
+                sql = tc.arguments.get("sql", "")
+                emit_event(on_event, {"type": "tool_called", "agent": "database", "tool": "run_sql_query", "detail": sql})
+
+            payloads = await asyncio.gather(*(_run_one(tc) for tc in response.tool_calls))
+
+            for tc, payload in zip(response.tool_calls, payloads):
                 emit_event(
                     on_event,
                     {"type": "tool_result", "agent": "database", "tool": "run_sql_query", "detail": json.dumps(payload)[:200]},

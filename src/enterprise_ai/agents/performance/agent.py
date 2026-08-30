@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import json
 
 from enterprise_ai.core.agent import AgentResult, OnEvent, emit_event
 from enterprise_ai.core.llm_client import LLMClient
 from enterprise_ai.core.llm_retry import LLMUnavailableError, call_tool_with_retry
+from enterprise_ai.core.tool_cache import ToolCache
 from enterprise_ai.integrations.atlassian.bitbucket_client import BitbucketClient
 from enterprise_ai.integrations.atlassian.confluence_client import ConfluenceClient
 from enterprise_ai.integrations.atlassian.jira_client import JiraClient
@@ -138,29 +140,54 @@ class PerformanceAgent:
         self._bitbucket_client = bitbucket_client
         self._sprint_calendar = sprint_calendar
 
-    async def _execute_tool(self, name: str, arguments: dict, citations: list[str]) -> object:
+    async def _fetch_raw(self, name: str, arguments: dict) -> object:
+        if name == "search_jira_issues":
+            return await self._jira_client.search_issues(**arguments)
+        if name == "get_bitbucket_commits":
+            return await self._bitbucket_client.get_commits(**arguments)
+        if name == "search_confluence_pages":
+            return await self._confluence_client.search_pages(**arguments)
+        if name == "get_confluence_page_content":
+            return await self._confluence_client.get_page_content(arguments["page_id"])
+        raise ValueError(f"Unknown tool: {name}")
+
+    async def _execute_tool(
+        self, name: str, arguments: dict, citations: list[str], tool_cache: ToolCache | None
+    ) -> object:
         # count is computed here, not left for the model to work out from a raw list — LLMs are
         # unreliable at counting items in text (confirmed live: correctly fetched 25 real
         # commits, then reported "29" in its prose answer despite the data being right there).
+        #
+        # The raw fetch (cacheable — Component 12) is kept separate from the count/citations
+        # wrapping below (always redone, cheap) so a cache hit still produces correct citations,
+        # exactly as if the data had been fetched fresh.
+        cached = tool_cache.get(name, arguments) if tool_cache is not None else ToolCache.MISSING
+        if cached is not ToolCache.MISSING:
+            raw = cached
+        else:
+            raw = await self._fetch_raw(name, arguments)
+            if tool_cache is not None:
+                tool_cache.set(name, arguments, raw)
+
         if name == "search_jira_issues":
-            results = await self._jira_client.search_issues(**arguments)
-            citations.extend(r["key"] for r in results)
-            return {"count": len(results), "results": results}
+            citations.extend(r["key"] for r in raw)
+            return {"count": len(raw), "results": raw}
         if name == "get_bitbucket_commits":
-            results = await self._bitbucket_client.get_commits(**arguments)
-            citations.extend(f"commit:{c['date']}:{c['author']}" for c in results)
-            return {"count": len(results), "results": results}
+            citations.extend(f"commit:{c['date']}:{c['author']}" for c in raw)
+            return {"count": len(raw), "results": raw}
         if name == "search_confluence_pages":
-            results = await self._confluence_client.search_pages(**arguments)
-            citations.extend(f"page:{r['title']}" for r in results)
-            return {"count": len(results), "results": results}
+            citations.extend(f"page:{r['title']}" for r in raw)
+            return {"count": len(raw), "results": raw}
         if name == "get_confluence_page_content":
-            content = await self._confluence_client.get_page_content(arguments["page_id"])
-            return {"content": content}
+            return {"content": raw}
         raise ValueError(f"Unknown tool: {name}")
 
     async def handle(
-        self, user_request: str, history: list[dict] | None = None, on_event: OnEvent | None = None
+        self,
+        user_request: str,
+        history: list[dict] | None = None,
+        on_event: OnEvent | None = None,
+        tool_cache: ToolCache | None = None,
     ) -> AgentResult:
         messages = [
             {"role": "system", "content": _build_system_prompt(self._sprint_calendar)},
@@ -202,15 +229,26 @@ class PerformanceAgent:
                 }
             )
 
+            # Tool calls within one turn are independent (e.g. "compare velocity across the
+            # team" asks for Jira + Bitbucket + Confluence at once) — run them concurrently
+            # (Component 12) instead of one-at-a-time, so total wait is the slowest call, not
+            # the sum of all of them. Each call catches its own exception (matching the previous
+            # sequential behavior) so one failing lookup doesn't cancel the others via gather.
+            async def _run_one(tc):
+                try:
+                    return await self._execute_tool(tc.name, tc.arguments, citations, tool_cache)
+                except Exception as exc:  # noqa: BLE001 — feed the real error back so the LLM can retry
+                    return {"error": str(exc)}
+
             for tc in response.tool_calls:
                 emit_event(
                     on_event,
                     {"type": "tool_called", "agent": "performance", "tool": tc.name, "detail": json.dumps(tc.arguments)},
                 )
-                try:
-                    result = await self._execute_tool(tc.name, tc.arguments, citations)
-                except Exception as exc:  # noqa: BLE001 — feed the real error back so the LLM can retry
-                    result = {"error": str(exc)}
+
+            tool_results = await asyncio.gather(*(_run_one(tc) for tc in response.tool_calls))
+
+            for tc, result in zip(response.tool_calls, tool_results):
                 emit_event(
                     on_event,
                     {"type": "tool_result", "agent": "performance", "tool": tc.name, "detail": json.dumps(result)[:200]},

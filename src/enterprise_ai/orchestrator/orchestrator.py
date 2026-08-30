@@ -4,6 +4,7 @@ import asyncio
 from dataclasses import dataclass
 
 from enterprise_ai.core.agent import Agent, AgentResult, OnEvent, emit_event
+from enterprise_ai.core.tool_cache import ToolCache
 from enterprise_ai.orchestrator.memory import ConversationMemory
 from enterprise_ai.orchestrator.router import Router, RoutingError
 
@@ -20,12 +21,24 @@ class Orchestrator:
 
     Owns a ConversationMemory (learnings.md #7) — session-only, in-process history, shared
     across all agents rather than kept per-agent, since a follow-up question can route to a
-    different agent than the one before it."""
+    different agent than the one before it.
 
-    def __init__(self, router: Router, agents: dict[str, Agent], memory: ConversationMemory | None = None) -> None:
+    Also owns a ToolCache (Component 12), same session-only lifetime and rationale as
+    ConversationMemory — threaded into every agent's `handle()` call the same way `history` is,
+    so PerformanceAgent/DatabaseAgent (the only agents that use it) don't re-fetch the same
+    Jira/Confluence/Bitbucket/SQL lookup twice within one conversation."""
+
+    def __init__(
+        self,
+        router: Router,
+        agents: dict[str, Agent],
+        memory: ConversationMemory | None = None,
+        tool_cache: ToolCache | None = None,
+    ) -> None:
         self._router = router
         self._agents = agents
         self._memory = memory or ConversationMemory()
+        self._tool_cache = tool_cache or ToolCache()
 
     async def handle(self, user_request: str, on_event: OnEvent | None = None) -> OrchestratorResult:
         history_messages = self._memory.as_messages()
@@ -45,7 +58,7 @@ class Orchestrator:
             # the one place that knows about every agent uniformly — an agent implementation
             # only ever needs to report its own tool calls, not its own start/end.
             emit_event(on_event, {"type": "agent_started", "agent": name})
-            result = await self._agents[name].handle(user_request, history_messages, on_event)
+            result = await self._agents[name].handle(user_request, history_messages, on_event, self._tool_cache)
             emit_event(on_event, {"type": "agent_finished", "agent": name})
             return result
 
