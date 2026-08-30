@@ -81,7 +81,7 @@ class EmailClient:
         message["To"] = to_address
         message.set_content(body)
 
-        with _IPv4SMTP(self._smtp_host, self._smtp_port) as smtp:
+        with _IPv4SMTP(self._smtp_host, self._smtp_port, timeout=10) as smtp:
             smtp.starttls()
             smtp.login(self._username, self._app_password)
             smtp.send_message(message)
