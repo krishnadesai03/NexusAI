@@ -112,6 +112,7 @@ def _fake_shared(*, communication_configured: bool = False) -> SharedResources:
         db_query_client=None,
         llm_client=FakeLLMClient(decision),
         communication_clients=(None, None, None) if communication_configured else None,
+        atlassian_mcp_session=None,
     )
 
 

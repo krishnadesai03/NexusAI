@@ -34,8 +34,7 @@ from enterprise_ai.core.embedding_client import default_embedding_client
 from enterprise_ai.core.llm_client import LLMClient, default_llm_client
 from enterprise_ai.core.tool_cache import ToolCache
 from enterprise_ai.integrations.atlassian.bitbucket_client import BitbucketClient
-from enterprise_ai.integrations.atlassian.confluence_client import ConfluenceClient
-from enterprise_ai.integrations.atlassian.jira_client import JiraClient
+from enterprise_ai.integrations.atlassian.mcp_client import AtlassianMCPSession, ConfluenceMCPClient, JiraMCPClient
 from enterprise_ai.integrations.communication.email_client import EmailClient
 from enterprise_ai.integrations.communication.slack_client import SlackClient
 from enterprise_ai.integrations.sql_db.postgres_client import PostgresQueryClient
@@ -121,7 +120,11 @@ class _UnseededCommunicationAgent:
 class SharedResources:
     """Built once per process. `communication_clients` is None when Slack/email credentials
     aren't configured — `build_session_orchestrator` uses that to decide whether each session
-    gets a real (isolated) CommunicationAgent or the shared stateless fallback."""
+    gets a real (isolated) CommunicationAgent or the shared stateless fallback.
+
+    `atlassian_mcp_session` is None when PerformanceAgent fell back to `_UnseededPerformanceAgent`
+    (no seed data, or the MCP connection itself failed) — kept here (not just inside
+    PerformanceAgent) so `close_shared_resources` can close it regardless of which agent is live."""
 
     router: Router
     knowledge_agent: Agent
@@ -131,6 +134,7 @@ class SharedResources:
     db_query_client: PostgresQueryClient | None
     llm_client: LLMClient
     communication_clients: tuple[LLMClient, SlackClient, EmailClient] | None
+    atlassian_mcp_session: AtlassianMCPSession | None
 
 
 async def build_shared_resources() -> SharedResources:
@@ -147,15 +151,28 @@ async def build_shared_resources() -> SharedResources:
     )
 
     performance_state_file = _performance_state_file()
+    atlassian_mcp_session: AtlassianMCPSession | None = None
     if performance_state_file is not None:
         sprint_calendar = json.loads(performance_state_file.read_text())["sprints"]
-        performance_agent: Agent = PerformanceAgent(
-            llm_client=llm_client,
-            jira_client=JiraClient(),
-            confluence_client=ConfluenceClient(),
-            bitbucket_client=BitbucketClient(),
-            sprint_calendar=sprint_calendar,
-        )
+        try:
+            # Jira and Confluence go through Atlassian's Remote MCP Server now (learnings.md
+            # #4/#12 follow-up: the original "blocked by EAP" conclusion only held for the
+            # generic Teamwork Graph endpoint tested at the time — the /preview endpoint's
+            # direct Jira/Confluence tools work today with the same ATLASSIAN_MCP_TOKEN).
+            # Bitbucket stays on direct REST — it isn't exposed through this MCP server yet.
+            atlassian_mcp_session = await AtlassianMCPSession.connect()
+            performance_agent: Agent = PerformanceAgent(
+                llm_client=llm_client,
+                jira_client=JiraMCPClient(atlassian_mcp_session),
+                confluence_client=ConfluenceMCPClient(atlassian_mcp_session),
+                bitbucket_client=BitbucketClient(),
+                sprint_calendar=sprint_calendar,
+            )
+        except Exception:
+            performance_agent = _UnseededPerformanceAgent()
+            if atlassian_mcp_session:
+                await atlassian_mcp_session.close()
+            atlassian_mcp_session = None
     else:
         performance_agent = _UnseededPerformanceAgent()
 
@@ -191,6 +208,7 @@ async def build_shared_resources() -> SharedResources:
         db_query_client=db_query_client,
         llm_client=llm_client,
         communication_clients=communication_clients,
+        atlassian_mcp_session=atlassian_mcp_session,
     )
 
 
@@ -229,6 +247,8 @@ async def close_shared_resources(shared: SharedResources) -> None:
     await shared.vector_store.close()
     if shared.db_query_client:
         await shared.db_query_client.close()
+    if shared.atlassian_mcp_session:
+        await shared.atlassian_mcp_session.close()
 
 
 def _database_url() -> str:

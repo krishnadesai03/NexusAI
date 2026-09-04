@@ -1,5 +1,7 @@
-"""Live smoke test for PerformanceAgent against the real Jira/Confluence/Bitbucket REST APIs
-and real OpenAI API. Not part of the automated test suite (tests/ only ever uses fakes).
+"""Live smoke test for PerformanceAgent against real Jira/Confluence (via Atlassian's Remote
+MCP Server — learnings.md #4/#12 follow-up), real Bitbucket (still direct REST — not exposed via
+MCP yet), and the real OpenAI API. Not part of the automated test suite (tests/ only ever uses
+fakes).
 
 Usage: .venv/Scripts/python.exe scripts/smoke_test_performance_agent.py
 """
@@ -38,15 +40,19 @@ async def main() -> None:
     from enterprise_ai.agents.performance.agent import PerformanceAgent
     from enterprise_ai.core.llm_client import OpenAILLMClient
     from enterprise_ai.integrations.atlassian.bitbucket_client import BitbucketClient
-    from enterprise_ai.integrations.atlassian.confluence_client import ConfluenceClient
-    from enterprise_ai.integrations.atlassian.jira_client import JiraClient
+    from enterprise_ai.integrations.atlassian.mcp_client import (
+        AtlassianMCPSession,
+        ConfluenceMCPClient,
+        JiraMCPClient,
+    )
 
     sprint_calendar = json.loads(STATE_FILE.read_text())["sprints"]
 
+    mcp_session = await AtlassianMCPSession.connect()
     agent = PerformanceAgent(
         llm_client=OpenAILLMClient(),
-        jira_client=JiraClient(),
-        confluence_client=ConfluenceClient(),
+        jira_client=JiraMCPClient(mcp_session),
+        confluence_client=ConfluenceMCPClient(mcp_session),
         bitbucket_client=BitbucketClient(),
         sprint_calendar=sprint_calendar,
     )
@@ -56,12 +62,15 @@ async def main() -> None:
         "Did anyone have an unusually quiet sprint, and if so what happened?",
     ]
 
-    for q in questions:
-        print(f"Q: {q}")
-        result = await agent.handle(q)
-        print(f"A: {result.content}")
-        print(f"citations ({len(result.metadata['citations'])}): {result.metadata['citations'][:10]}")
-        print()
+    try:
+        for q in questions:
+            print(f"Q: {q}")
+            result = await agent.handle(q)
+            print(f"A: {result.content}")
+            print(f"citations ({len(result.metadata['citations'])}): {result.metadata['citations'][:10]}")
+            print()
+    finally:
+        await mcp_session.close()
 
 
 if __name__ == "__main__":

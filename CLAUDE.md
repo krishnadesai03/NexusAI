@@ -73,8 +73,13 @@ use fakes (`FakeLLMClient`, `FakeAgent`, etc.) — no network calls, no API key 
 
 Live, real-API smoke tests are separate one-off scripts under `scripts/` (not part of `pytest`),
 e.g. `scripts/smoke_test_llm.py` — these need `OPENAI_API_KEY` set and make real, billed calls.
-No such script exists yet for the web API (Component 9/10) — it's covered by `test_api.py`'s
-fakes only, never yet run live against a real `uvicorn` instance.
+`scripts/smoke_test_api.py` covers the web API (Component 9/10) — real HTTP against a running
+server (local `uvicorn` or the deployed Render URL via `SMOKE_TEST_BASE_URL`), exercising login ->
+chat (consuming the real SSE stream) -> the Communication Agent's stage/cancel HITL path ->
+logout, plus confirming the token is actually dead afterward. Needs `SMOKE_TEST_EMAIL`/
+`SMOKE_TEST_PASSWORD` (a real login matching an `APP_USERS_JSON` entry); by default it only
+stages-then-cancels a Communication Agent draft so it never spams Slack/email on every run — set
+`SMOKE_TEST_CONFIRM_SEND=1` to also exercise one real confirm -> real send.
 
 No linter/formatter is configured yet.
 
@@ -247,12 +252,13 @@ through each platform's dashboard, not committed IaC — no `render.yaml`/`verce
 `Procfile` exist in the repo. The Render free tier cold-starts after idle (a `503` with
 `Retry-After` on the first request, resolving on retry) — expected, not a broken deploy.
 `bootstrap.py`'s `_PERFORMANCE_STATE_FILE_SECRET` fallback exists specifically for Render's Secret
-File mechanism. **Still open:** no live smoke test has exercised the actual login → chat → HITL
-flow against these deployed URLs (only `/health`/`/login` have been spot-checked), and there's no
-CI/CD beyond each platform's own git-push auto-deploy.
-
-**What's still genuinely missing here:** no live smoke test for the API (every other integration in
-this project has one under `scripts/`; this doesn't yet, deployed or local).
+File mechanism. The full login → chat → HITL confirm/send flow has now been exercised against
+these deployed URLs, manually (real browser, real Vercel/Render), including a real confirmed
+Slack/email send — this surfaced and fixed a real bug (see the Communication Agent's SMTP →
+Resend follow-up in `learnings.md` #6). `scripts/smoke_test_api.py` now exists to automate the
+same flow (see Commands, above) but hasn't yet been run live against the deployed URL specifically
+(only locally) as of this writing — that's the concrete next step to fully close this out. There's
+still no CI/CD beyond each platform's own git-push auto-deploy.
 
 **Evaluation harness (Component 11, implemented)** — a top-level `evaluation/` package (same
 top-level-package precedent as `api/`; `src/enterprise_ai/evaluation/` is an unused Component 0.5
