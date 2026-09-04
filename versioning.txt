@@ -1,0 +1,10 @@
+Version 1:
+- Single user
+- All permissions given to read any form of data (no write/update/delete)
+- In-session memory
+- Chat interface
+- All 4 agents working properly
+- Atlassian working on REST API calls, not MCP
+- Framework is hand-rolled (Python based), not LangGraph based
+- Citations are shown on UI
+- Internal working is shown on UI
