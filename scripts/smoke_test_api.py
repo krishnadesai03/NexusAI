@@ -47,14 +47,26 @@ def _load_dotenv(path: Path) -> None:
 
 
 async def _wait_for_healthy(client: httpx.AsyncClient, base_url: str, attempts: int = 4) -> None:
-    """Render's free tier cold-starts after idle: the first request can 503 with a Retry-After
-    header before the container is actually up (documented in CLAUDE.md's Component 13 section,
-    "expected, not a broken deploy") — retry through that instead of treating it as a failure."""
+    """Retry through Render cold-start responses and transient connection/read timeouts."""
     for attempt in range(1, attempts + 1):
-        resp = await client.get(f"{base_url}/health")
+        try:
+            resp = await client.get(f"{base_url}/health")
+        except httpx.RequestError as exc:
+            if attempt == attempts:
+                raise SystemExit(
+                    f"/health never responded after {attempts} attempts: {type(exc).__name__}"
+                ) from exc
+            wait_s = 3.0
+            print(f"  /health -> {type(exc).__name__}, retrying in {wait_s}s ({attempt}/{attempts})")
+            await asyncio.sleep(wait_s)
+            continue
+
         if resp.status_code == 200:
             print(f"  /health -> 200 {resp.json()}")
             return
+
+        if attempt == attempts:
+            break
         wait_s = float(resp.headers.get("Retry-After", 3))
         print(f"  /health -> {resp.status_code} (cold start?), retrying in {wait_s}s ({attempt}/{attempts})")
         await asyncio.sleep(wait_s)

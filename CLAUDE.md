@@ -221,9 +221,10 @@ cheap per-session slice — a fresh `ConversationMemory` and a fresh `Communicat
 staged-draft state (`self._pending`) can't be shared across sessions without one user's draft
 leaking into another's confirm click. `scripts/chat.py` calls both back-to-back for its one CLI
 session; the same two functions also back the real multi-session FastAPI backend in `api/` (see
-below). Each of Performance/Database/Communication Agent degrades to a small `_Unseeded*Agent`
-stub with a clear "not configured yet" message if its credentials or seed data aren't present,
-instead of failing process startup.
+below). Each agent degrades to a small `_Unseeded*Agent` stub with a clear unavailable or
+not-configured message if its external dependency, credentials, or seed data aren't available.
+Startup waits are bounded by `STARTUP_DEPENDENCY_TIMEOUT_SECONDS` (15 seconds by default), so a
+pgvector/Postgres or Atlassian outage cannot indefinitely block the API's `/health` endpoint.
 
 **Web API & frontend (Component 9, implemented) + live trace streaming (Component 10,
 implemented).** A separate, top-level `api/` package (NOT `src/enterprise_ai/api/`, which is an
@@ -237,7 +238,7 @@ Server-Sent Events), `api/pending.py` (`POST /pending/{confirm,cancel,revise}`, 
 connection), `api/schemas.py`. A matching Next.js frontend lives in `web/` (login, streaming chat,
 a `PendingActionCard` driving the same 3-option HITL menu as `scripts/chat.py`'s CLI version, and a
 live `TracePanel`). Both sides are unit-tested together in `tests/unit/test_api.py` (16 tests via
-FastAPI's `TestClient` + fakes) — part of the 82/82 passing full suite.
+FastAPI's `TestClient` + fakes) — part of the 83/83 passing full suite.
 
 The streaming `/chat` response is powered by a live trace mechanism threaded through the whole
 orchestrator: `Agent.handle()` carries an optional third `on_event: OnEvent | None` callback

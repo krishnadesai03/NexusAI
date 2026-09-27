@@ -14,6 +14,6 @@ Version 2 (package 0.2.0, current):
 - Bitbucket remains on REST because commit data is not exposed through that MCP endpoint
 - Email delivery uses Resend's HTTPS API rather than SMTP
 - Performance/Database tool calls run in parallel and use a session-scoped result cache
-- DeepEval regression harness and the 82-test offline suite are in place
+- DeepEval regression harness and the 83-test offline suite are in place
 - Backend and frontend are deployed on Render and Vercel
 - GitHub Actions is configured to run unit tests and correctness-focused Ruff checks

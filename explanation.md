@@ -289,5 +289,5 @@ enough to catch everything — there's no second door it could have gone through
   enterprise system.
 - Consider caching an exact Database-Agent question → generated-SQL mapping. Raw SQL results are
   already cached per session; this additional cache would only avoid part of the LLM work.
-- The DeepEval regression harness and 82-test offline suite are automated locally/through CI. The
+- The DeepEval regression harness and 83-test offline suite are automated locally/through CI. The
   safe deployed stage/cancel smoke test should still be run regularly against the live backend.

@@ -20,7 +20,9 @@ same wiring, just with exactly one session.
 
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -49,6 +51,8 @@ PERFORMANCE_STATE_FILE = Path(__file__).resolve().parent.parent.parent / "script
 # regardless of what name it was uploaded under — this is the deployed-environment equivalent of
 # PERFORMANCE_STATE_FILE above, which only ever exists on a local checkout.
 _PERFORMANCE_STATE_FILE_SECRET = Path("/etc/secrets/performance_seed_state.json")
+_STARTUP_DEPENDENCY_TIMEOUT_SECONDS = float(os.environ.get("STARTUP_DEPENDENCY_TIMEOUT_SECONDS", "15"))
+logger = logging.getLogger(__name__)
 
 
 def _performance_state_file() -> Path | None:
@@ -75,6 +79,22 @@ class _UnseededPerformanceAgent:
             agent_name="performance",
             content="Performance data hasn't been seeded in this environment yet — run the "
             "scripts/push_performance_fixtures_*.py scripts first.",
+        )
+
+
+class _UnseededKnowledgeAgent:
+    """Fallback when pgvector is unavailable during startup."""
+
+    async def handle(
+        self,
+        user_request: str,
+        history: list[dict] | None = None,
+        on_event: OnEvent | None = None,
+        tool_cache: ToolCache | None = None,
+    ) -> AgentResult:
+        return AgentResult(
+            agent_name="knowledge",
+            content="The company knowledge store is temporarily unavailable. Please try again later.",
         )
 
 
@@ -130,7 +150,7 @@ class SharedResources:
     knowledge_agent: Agent
     performance_agent: Agent
     database_agent: Agent
-    vector_store: PgVectorStore
+    vector_store: PgVectorStore | None
     db_query_client: PostgresQueryClient | None
     llm_client: LLMClient
     communication_clients: tuple[LLMClient, SlackClient, EmailClient] | None
@@ -142,13 +162,19 @@ async def build_shared_resources() -> SharedResources:
     embedding_client = default_embedding_client()
 
     dsn = _database_url()
-    vector_store = await PgVectorStore.connect(dsn)
-
-    knowledge_agent = KnowledgeAgent(
-        embedding_client=embedding_client,
-        vector_store=vector_store,
-        llm_client=llm_client,
-    )
+    vector_store: PgVectorStore | None = None
+    try:
+        async with asyncio.timeout(_STARTUP_DEPENDENCY_TIMEOUT_SECONDS):
+            vector_store = await PgVectorStore.connect(dsn)
+        knowledge_agent: Agent = KnowledgeAgent(
+            embedding_client=embedding_client,
+            vector_store=vector_store,
+            llm_client=llm_client,
+        )
+        logger.info("Knowledge agent initialized")
+    except Exception as exc:
+        logger.warning("Knowledge agent unavailable during startup: %s", type(exc).__name__)
+        knowledge_agent = _UnseededKnowledgeAgent()
 
     performance_state_file = _performance_state_file()
     atlassian_mcp_session: AtlassianMCPSession | None = None
@@ -160,7 +186,8 @@ async def build_shared_resources() -> SharedResources:
             # generic Teamwork Graph endpoint tested at the time — the /preview endpoint's
             # direct Jira/Confluence tools work today with the same ATLASSIAN_MCP_TOKEN).
             # Bitbucket stays on direct REST — it isn't exposed through this MCP server yet.
-            atlassian_mcp_session = await AtlassianMCPSession.connect()
+            async with asyncio.timeout(_STARTUP_DEPENDENCY_TIMEOUT_SECONDS):
+                atlassian_mcp_session = await AtlassianMCPSession.connect()
             performance_agent: Agent = PerformanceAgent(
                 llm_client=llm_client,
                 jira_client=JiraMCPClient(atlassian_mcp_session),
@@ -168,7 +195,9 @@ async def build_shared_resources() -> SharedResources:
                 bitbucket_client=BitbucketClient(),
                 sprint_calendar=sprint_calendar,
             )
-        except Exception:
+            logger.info("Performance agent initialized")
+        except Exception as exc:
+            logger.warning("Performance agent unavailable during startup: %s", type(exc).__name__)
             performance_agent = _UnseededPerformanceAgent()
             if atlassian_mcp_session:
                 await atlassian_mcp_session.close()
@@ -178,8 +207,9 @@ async def build_shared_resources() -> SharedResources:
 
     db_query_client: PostgresQueryClient | None = None
     try:
-        db_query_client = await PostgresQueryClient.connect()
-        schema_description = await db_query_client.get_schema_description()
+        async with asyncio.timeout(_STARTUP_DEPENDENCY_TIMEOUT_SECONDS):
+            db_query_client = await PostgresQueryClient.connect()
+            schema_description = await db_query_client.get_schema_description()
         if not schema_description:
             raise RuntimeError("company_data schema is empty")
         database_agent: Agent = DatabaseAgent(
@@ -187,7 +217,9 @@ async def build_shared_resources() -> SharedResources:
             db_client=db_query_client,
             schema_description=schema_description,
         )
-    except Exception:
+        logger.info("Database agent initialized")
+    except Exception as exc:
+        logger.warning("Database agent unavailable during startup: %s", type(exc).__name__)
         database_agent = _UnseededDatabaseAgent()
         if db_query_client:
             await db_query_client.close()
@@ -244,7 +276,8 @@ def build_session_orchestrator(shared: SharedResources, user_display_name: str |
 
 
 async def close_shared_resources(shared: SharedResources) -> None:
-    await shared.vector_store.close()
+    if shared.vector_store:
+        await shared.vector_store.close()
     if shared.db_query_client:
         await shared.db_query_client.close()
     if shared.atlassian_mcp_session:
