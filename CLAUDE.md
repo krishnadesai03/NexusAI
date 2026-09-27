@@ -81,7 +81,11 @@ logout, plus confirming the token is actually dead afterward. Needs `SMOKE_TEST_
 stages-then-cancels a Communication Agent draft so it never spams Slack/email on every run — set
 `SMOKE_TEST_CONFIRM_SEND=1` to also exercise one real confirm -> real send.
 
-No linter/formatter is configured yet.
+Ruff is configured for correctness-focused linting (no repository-wide formatter policy yet):
+
+```bash
+.venv/Scripts/python.exe -m ruff check .
+```
 
 Run the web API + frontend locally (Component 9/10; needs the same `.env` as everything else,
 plus `APP_USERS_JSON` — generate an entry's hash with
@@ -159,16 +163,14 @@ several lookups, not one). This required a second method on `LLMClient` alongsid
 native function-calling; the agent itself owns the multi-turn message history, keeping the
 adapter thin.
 
-Data access is direct REST API calls (`integrations/atlassian/{jira,confluence,bitbucket}_client.py`),
-not MCP — genuine Atlassian Remote MCP Server access was investigated and built against
-successfully at the protocol level, but real data calls are blocked by what looks like an EAP
-(Early Access Program) gate on Atlassian's side, independent of any configuration on this
-project's end. Direct REST stays the working path; MCP remains a documented future upgrade if
-that access is ever granted. Two non-obvious auth facts worth knowing before touching these
-clients: Jira/Confluence REST auth is Basic (email + classic API token), but Bitbucket's REST
-API needs Basic auth with email too — while git-over-HTTPS (used only by the one-off seeding
-script) needs the Bitbucket *username* instead. The two are genuinely inconsistent, confirmed
-live, not a guess.
+Jira and Confluence data access now goes through Atlassian's Remote MCP Server preview endpoint
+(`integrations/atlassian/mcp_client.py`); Bitbucket remains on direct REST because that MCP server
+does not expose the commit-level data this project uses. `AtlassianMCPSession` is opened once per
+process by `build_shared_resources()` and closed during shutdown. The older generic Teamwork Graph
+MCP endpoint really was blocked during the first investigation, but `/v1/mcp/preview` was later
+found and verified live; `learnings.md` Component 4 preserves both stages of that investigation.
+One auth detail still matters for fixture scripts: Bitbucket REST uses Basic auth with email,
+while git-over-HTTPS uses the Bitbucket *username*.
 
 Two design choices worth knowing: (1) citations in `AgentResult.metadata` are collected
 **programmatically** from actual tool-call results as they execute, not self-reported by the
@@ -235,7 +237,7 @@ Server-Sent Events), `api/pending.py` (`POST /pending/{confirm,cancel,revise}`, 
 connection), `api/schemas.py`. A matching Next.js frontend lives in `web/` (login, streaming chat,
 a `PendingActionCard` driving the same 3-option HITL menu as `scripts/chat.py`'s CLI version, and a
 live `TracePanel`). Both sides are unit-tested together in `tests/unit/test_api.py` (16 tests via
-FastAPI's `TestClient` + fakes) — part of the 68/68 passing full suite.
+FastAPI's `TestClient` + fakes) — part of the 82/82 passing full suite.
 
 The streaming `/chat` response is powered by a live trace mechanism threaded through the whole
 orchestrator: `Agent.handle()` carries an optional third `on_event: OnEvent | None` callback
@@ -257,8 +259,10 @@ these deployed URLs, manually (real browser, real Vercel/Render), including a re
 Slack/email send — this surfaced and fixed a real bug (see the Communication Agent's SMTP →
 Resend follow-up in `learnings.md` #6). `scripts/smoke_test_api.py` now exists to automate the
 same flow (see Commands, above) but hasn't yet been run live against the deployed URL specifically
-(only locally) as of this writing — that's the concrete next step to fully close this out. There's
-still no CI/CD beyond each platform's own git-push auto-deploy.
+(only locally) as of this writing — that's the concrete next step to fully close this out. GitHub
+Actions is configured to run the offline unit suite and Ruff on pushes and pull requests;
+Render/Vercel deployment
+still relies on each platform's git-push auto-deploy rather than committed infrastructure-as-code.
 
 **Evaluation harness (Component 11, implemented)** — a top-level `evaluation/` package (same
 top-level-package precedent as `api/`; `src/enterprise_ai/evaluation/` is an unused Component 0.5
@@ -269,21 +273,22 @@ deterministic citation-substring check for Performance Agent) against Performanc
 Agents. Both scripts build their golden datasets (`evaluation/datasets/*.py`) as a **regression
 suite from this file's own real, previously-documented bugs** — e.g. the client-meals
 category-overlap case, the billing-commit miscount, the `'active'`/`'Active'` capitalization bug —
-so a fix staying fixed is verified automatically, not just once by hand. Live-verified: Knowledge
-7/8 cases passed all 4 RAG metrics (the one failure is a genuine Faithfulness-metric nuance, not a
-defect — see `learnings.md` #11); Performance+Database 9/9 GEval correctness cases passed 100%.
+so a fix staying fixed is verified automatically, not just once by hand. Live verification's
+latest recorded results: Knowledge retrieval Recall@3/5 was 100% with MRR 0.938; all 8 graded RAG
+cases passed all four DeepEval metrics on the latest run (the client-meals Faithfulness judgment
+has shown run-to-run variance); Performance/Database GEval correctness passed 18/19, with the one
+failure correctly retrieving the data but omitting the requested combined total in its prose.
 Real agentic tracing (`ToolCorrectnessMetric`/`TaskCompletionMetric`, which need DeepEval's
 `@observe` instrumentation) is a documented future upgrade, not built — same deferral pattern as
-Component 4's MCP gap.
+other explicitly-scoped future work.
 
-**Current implementation status:** Components 0/0.5/1/3/4/5/6/7/8/9/10/11/13 implemented (9 and 10
-unit-tested but not yet verified live end-to-end against real dependencies, unlike every earlier
-component — see above; 13 is live-deployed and spot-checked but not exercised end-to-end either;
-11 is live-verified). Component 2 (orchestration framework/library choice) is decided, not just
-deferred: stay hand-rolled `asyncio`, no LangGraph/Ray migration, unless a concrete requirement
-(durable/resumable workflows, genuinely cyclic control flow) actually demands it — see
-`learnings.md` #2 for the full rationale. Caching & latency optimization (12) is not started — the
-only real remaining gap.
+**Current implementation status:** Components 0/0.5/1/3/4/5/6/7/8/9/10/11/12/13 are implemented.
+The full deployed browser flow has been exercised manually; the automated safe stage/cancel smoke
+test still needs to be run against the deployed URL. Component 11 is live-verified. Component 12
+(parallel tool execution plus session-scoped Performance/Database tool-result caching) is covered
+by unit tests but has not had a dedicated real-integration verification pass. Component 2 remains
+a deliberate hand-rolled `asyncio` decision; reconsider LangGraph only if durable/resumable or
+genuinely cyclic workflows become a concrete requirement — see `learnings.md` #2.
 
 One maintenance note for whoever adds the next agent: `Router._SYSTEM_PROMPT`
 (`orchestrator/router.py`) must keep each agent's domain description mutually exclusive. A real

@@ -1,4 +1,4 @@
-Version 1:
+Version 1 (package 0.1.0):
 - Single user
 - All permissions given to read any form of data (no write/update/delete)
 - In-session memory
@@ -8,3 +8,12 @@ Version 1:
 - Framework is hand-rolled (Python based), not LangGraph based
 - Citations are shown on UI
 - Internal working is shown on UI
+
+Version 2 (package 0.2.0, current):
+- Jira and Confluence use Atlassian's Remote MCP Server preview endpoint
+- Bitbucket remains on REST because commit data is not exposed through that MCP endpoint
+- Email delivery uses Resend's HTTPS API rather than SMTP
+- Performance/Database tool calls run in parallel and use a session-scoped result cache
+- DeepEval regression harness and the 82-test offline suite are in place
+- Backend and frontend are deployed on Render and Vercel
+- GitHub Actions is configured to run unit tests and correctness-focused Ruff checks

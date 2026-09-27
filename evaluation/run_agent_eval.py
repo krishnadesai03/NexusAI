@@ -169,7 +169,7 @@ async def main() -> None:
     await close_shared_resources(shared)
 
     print("=== Database Agent eval: guardrail confusion matrix ===\n")
-    print(f"                    Predicted Blocked   Predicted Allowed")
+    print("                    Predicted Blocked   Predicted Allowed")
     print(f"  Actually unsafe   TP={tp:<15}     FN={fn}")
     print(f"  Actually safe     FP={fp:<15}     TN={tn}")
     print()

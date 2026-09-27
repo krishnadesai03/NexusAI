@@ -141,6 +141,17 @@ who has never seen it before.
   that works today. We wrote down exactly what we tried, so it's easy to switch back later
   if that special access ever becomes available.
 
+## The Door Opened — We Switched Back
+
+- Later, we found a different, less-documented entrance to that same "proper" way of
+  connecting — and this time it worked, without needing any special extra access.
+- So the architecture has now shifted: for Jira and Confluence, this helper talks through
+  that official connector (an "MCP server") instead of calling those tools' plain web
+  addresses directly. Bitbucket still uses the simpler, direct way, since it isn't offered
+  through that same connector yet.
+- We tested this switch live against the real pretend-company data and it answered correctly,
+  so it's a genuine upgrade, not just a plan.
+
 ## Helper #3: The Database Reader (Database Agent)
 
 - This helper answers questions about company data stored in tables — employees, customers,
@@ -209,9 +220,8 @@ enough to catch everything — there's no second door it could have gone through
   choose where a message goes at all.** Slack always goes to one fixed, pre-approved channel.
   Email always goes to one fixed, pre-approved address — with one narrow exception below. The
   AI only ever controls *what the message says*, never *who receives it*.
-- We deliberately did not add a "please confirm before sending" step yet. Since the destination
-  is already locked down to safe test targets, an unconfirmed send can only ever reach us —
-  so a confirmation step would add complexity without adding real safety, for now.
+- The first version deliberately did not add a confirmation step because every destination was a
+  safe test target. A later version added the Send/Edit/Cancel approval flow described below.
 
 ## Letting It Reach Specific (Safe) People By Name
 
@@ -270,12 +280,14 @@ enough to catch everything — there's no second door it could have gone through
 
 ## Future Scope
 
-- The evaluation steps described above only ran once, by hand, against a fixed set of example
-  questions for three of the four helpers — there's no automatic check yet that re-runs those
-  tests on every future change and flags a new mistake the moment it's introduced.
-- A simple website version has been built and put online, but nobody has walked through the whole
-  real flow — logging in, asking a question, watching the answer stream in, confirming a send —
-  from an actual browser against the live version yet. Only quick spot-checks have been done there
-  so far.
-- Memory doesn't survive closing the program yet — it only lasts for one running session.
-- Caching the user questions (related to Database agent only) and their SQL to save cost on 1 LLM call.
+- Add dependency-aware workflows so one helper can safely use another helper's result in the same
+  request, followed by orchestration-level evaluation and production observability.
+- Persist conversations, login sessions, cached state, and pending approvals; today they disappear
+  when the backend process restarts.
+- Build a maintainable document ingestion/update pipeline instead of relying on fixture seeding.
+- Add user-based authorization and deployment hardening before treating the application as a real
+  enterprise system.
+- Consider caching an exact Database-Agent question → generated-SQL mapping. Raw SQL results are
+  already cached per session; this additional cache would only avoid part of the LLM work.
+- The DeepEval regression harness and 82-test offline suite are automated locally/through CI. The
+  safe deployed stage/cancel smoke test should still be run regularly against the live backend.

@@ -14,7 +14,7 @@ Usage (preview only, no side effects):
 from __future__ import annotations
 
 import random
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import date, timedelta
 
 RANDOM_SEED = 42

@@ -109,7 +109,7 @@ enterprise-ai/
 │   │   ├── database/         # SQL tool-calling agent
 │   │   └── communication/    # Slack/email agent with HITL confirmation
 │   ├── core/                 # Agent/LLMClient/EmbeddingClient protocols, ToolCache, retry logic
-│   ├── integrations/         # Concrete adapters: pgvector, Atlassian REST, Postgres, Slack/Resend
+│   ├── integrations/         # Concrete adapters: pgvector, Atlassian MCP/REST, Postgres, Slack/Resend
 │   └── bootstrap.py          # Shared resource + per-session wiring, reused by every entry point
 ├── api/                       # FastAPI backend (auth, chat/SSE, pending actions, sessions)
 ├── web/                        # Next.js frontend
@@ -173,8 +173,9 @@ velocity to what the docs promised"* routes to both Performance and Knowledge co
 
 ## Future Improvements
 
-- **Automated CI/CD** — currently each platform auto-deploys on push to `main`, with no automated
-  test gate (unit tests or a live smoke test) required to pass first.
+- **Deployment automation** — GitHub Actions is configured to run the offline unit suite and Ruff
+  on pushes and pull requests. Render/Vercel still auto-deploy from git without committed
+  infrastructure-as-code or an automated deployed smoke-test gate.
 - **Caching for the Knowledge Agent and repeated database questions** — tool-result caching for
   the Performance/Database agents is already in place; embedding-query caching and a
   question-to-SQL cache (for literal repeat questions) are still open.
