@@ -25,7 +25,6 @@ sys.path.insert(0, str(ROOT / "scripts"))
 from seed_database_data import generate_all  # noqa: E402
 
 READONLY_ROLE = "enterprise_ai_readonly"
-READONLY_PASSWORD = "enterprise_ai_readonly"
 
 SCHEMA_DDL = """
 CREATE SCHEMA IF NOT EXISTS company_data;
@@ -112,10 +111,15 @@ def _load_dotenv(path: Path) -> None:
         os.environ.setdefault(key.strip(), value.strip())
 
 
-async def _ensure_readonly_role(conn: asyncpg.Connection) -> None:
+async def _ensure_readonly_role(conn: asyncpg.Connection, password: str) -> None:
+    # PostgreSQL does not accept a bind parameter in CREATE/ALTER ROLE's PASSWORD clause.
+    # Ask PostgreSQL itself to quote the value before interpolating it into the DDL.
+    quoted_password = await conn.fetchval("SELECT quote_literal($1)", password)
     exists = await conn.fetchval("SELECT 1 FROM pg_roles WHERE rolname = $1", READONLY_ROLE)
     if not exists:
-        await conn.execute(f"CREATE ROLE {READONLY_ROLE} LOGIN PASSWORD '{READONLY_PASSWORD}'")
+        await conn.execute(f"CREATE ROLE {READONLY_ROLE} LOGIN PASSWORD {quoted_password}")
+    else:
+        await conn.execute(f"ALTER ROLE {READONLY_ROLE} PASSWORD {quoted_password}")
     await conn.execute(f"GRANT USAGE ON SCHEMA company_data TO {READONLY_ROLE}")
     await conn.execute(f"GRANT SELECT ON ALL TABLES IN SCHEMA company_data TO {READONLY_ROLE}")
     await conn.execute(
@@ -134,6 +138,7 @@ async def _clear_tables(conn: asyncpg.Connection) -> None:
 async def main() -> None:
     _load_dotenv(ROOT / ".env")
     dsn = os.environ["DATABASE_URL"]
+    readonly_password = os.environ["DATABASE_READONLY_PASSWORD"]
 
     data = generate_all()
     print("Generated: " + ", ".join(f"{k}={len(v)}" for k, v in data.items()))
@@ -144,7 +149,7 @@ async def main() -> None:
         await conn.execute(SCHEMA_DDL)
 
         print("Creating read-only role...")
-        await _ensure_readonly_role(conn)
+        await _ensure_readonly_role(conn, readonly_password)
 
         print("Clearing existing rows (idempotent re-seed)...")
         await _clear_tables(conn)

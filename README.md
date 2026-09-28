@@ -74,7 +74,8 @@ tool calls — streams live to the frontend over Server-Sent Events.
 
 **Infrastructure**
 - Docker Compose (local Postgres + pgvector)
-- Render (backend hosting), Vercel (frontend hosting) — both dashboard-configured, no IaC
+- Supabase (deployed Postgres + pgvector), Render (backend), Vercel (frontend) — all
+  dashboard-configured, no IaC
 
 ## Architecture
 

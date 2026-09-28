@@ -30,30 +30,57 @@ class PgVectorStore:
     decision 3) to consolidate vector search into the same Postgres instance Component 5 will
     use for company data, instead of running a separate dedicated vector database."""
 
-    def __init__(self, pool: asyncpg.Pool, *, table: str = "knowledge_chunks", embedding_dim: int = 1536) -> None:
+    def __init__(
+        self,
+        pool: asyncpg.Pool,
+        *,
+        table: str = "knowledge_chunks",
+        embedding_dim: int = 1536,
+        vector_schema: str = "public",
+    ) -> None:
         self._pool = pool
         self._table = table
         self._embedding_dim = embedding_dim
+        self._vector_schema = vector_schema
 
     @classmethod
     async def connect(cls, dsn: str, *, table: str = "knowledge_chunks", embedding_dim: int = 1536) -> "PgVectorStore":
-        async def _init_connection(conn: asyncpg.Connection) -> None:
-            await register_vector(conn)
+        # Supabase installs pgvector in `extensions`; local Postgres commonly installs it in
+        # `public`. Discover the real schema before registering asyncpg's binary codec.
+        setup_connection = await asyncpg.connect(dsn)
+        try:
+            await setup_connection.execute("CREATE EXTENSION IF NOT EXISTS vector")
+            vector_schema = await setup_connection.fetchval(
+                """
+                SELECT namespace.nspname
+                FROM pg_extension AS extension
+                JOIN pg_namespace AS namespace ON namespace.oid = extension.extnamespace
+                WHERE extension.extname = 'vector'
+                """
+            )
+        finally:
+            await setup_connection.close()
 
-        pool = await asyncpg.create_pool(dsn, init=_init_connection)
-        store = cls(pool, table=table, embedding_dim=embedding_dim)
+        if not vector_schema:
+            raise RuntimeError("The pgvector extension is not available")
+
+        async def _init_connection(conn: asyncpg.Connection) -> None:
+            await register_vector(conn, schema=vector_schema)
+
+        pool = await asyncpg.create_pool(dsn, init=_init_connection, min_size=1, max_size=5)
+        store = cls(pool, table=table, embedding_dim=embedding_dim, vector_schema=vector_schema)
         await store._ensure_schema()
         return store
 
     async def _ensure_schema(self) -> None:
+        quoted_vector_schema = '"' + self._vector_schema.replace('"', '""') + '"'
         async with self._pool.acquire() as conn:
-            await conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
             await conn.execute(
                 f"""
                 CREATE TABLE IF NOT EXISTS {self._table} (
                     doc_id TEXT PRIMARY KEY,
                     text TEXT NOT NULL,
-                    embedding vector({self._embedding_dim}) NOT NULL,
+                    embedding {quoted_vector_schema}.vector({self._embedding_dim}) NOT NULL,
                     metadata JSONB NOT NULL DEFAULT '{{}}'::jsonb
                 )
                 """

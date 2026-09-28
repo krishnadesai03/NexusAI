@@ -68,7 +68,7 @@ class PostgresQueryClient:
         async def _init_connection(conn: asyncpg.Connection) -> None:
             await conn.execute(f"SET statement_timeout = {STATEMENT_TIMEOUT_MS}")
 
-        pool = await asyncpg.create_pool(dsn, init=_init_connection)
+        pool = await asyncpg.create_pool(dsn, init=_init_connection, min_size=1, max_size=5)
         return cls(pool, schema=schema)
 
     async def get_schema_description(self) -> str:
