@@ -42,8 +42,8 @@ tool calls — streams live to the frontend over Server-Sent Events.
   destination-never-LLM-controlled rule for messaging.
 - **Human-in-the-loop confirmation** — the Communication Agent only ever stages a draft; nothing
   sends until an explicit Send / Edit / Cancel decision.
-- **Session-scoped conversation memory** — the last few turns of a conversation are threaded into
-  whichever agent(s) handle a follow-up, even if routing switches agents mid-conversation.
+- **Persistent, user-owned conversation memory** — complete transcripts and pending approvals live
+  in Supabase; only the last five turns are threaded into agents to keep prompts bounded.
 - **Session-scoped tool-result caching + parallel tool calls** — independent tool calls within one
   turn run concurrently, and repeated lookups within the same conversation are memoized instead of
   re-fetched.
@@ -103,7 +103,7 @@ explicit confirmation step actually executes it.
 ```
 enterprise-ai/
 ├── src/enterprise_ai/
-│   ├── orchestrator/         # Router, Orchestrator, ConversationMemory, schemas
+│   ├── orchestrator/         # Router, Orchestrator, bounded prompt memory, schemas
 │   ├── agents/
 │   │   ├── knowledge/        # RAG agent
 │   │   ├── performance/      # Jira/Confluence/Bitbucket tool-calling agent
@@ -112,10 +112,11 @@ enterprise-ai/
 │   ├── core/                 # Agent/LLMClient/EmbeddingClient protocols, ToolCache, retry logic
 │   ├── integrations/         # Concrete adapters: pgvector, Atlassian MCP/REST, Postgres, Slack/Resend
 │   └── bootstrap.py          # Shared resource + per-session wiring, reused by every entry point
-├── api/                       # FastAPI backend (auth, chat/SSE, pending actions, sessions)
+├── api/                       # FastAPI backend (Supabase Auth, durable conversations, chat/SSE)
 ├── web/                        # Next.js frontend
 ├── evaluation/                 # DeepEval-based RAG and agent-correctness evaluation harness
 ├── scripts/                    # CLI chat client, live smoke tests, data-seeding scripts
+├── supabase/migrations/        # Versioned persistence schema, RLS policies, grants
 ├── tests/unit/                 # Fake-backed unit tests (no network calls, no API key required)
 ├── docker-compose.yml          # Local Postgres + pgvector
 ├── pyproject.toml              # Python dependencies (source of truth)
@@ -142,8 +143,31 @@ cp .env.example .env
 The Performance Agent additionally needs a real Atlassian Cloud site (Jira + Confluence) and a
 Bitbucket workspace — account setup is manual (see `.env.example`'s Atlassian section), after
 which the seeding scripts under `scripts/` populate it with synthetic data. The Communication
-Agent needs a Slack bot token and a Resend API key (see `.env.example`'s Communication Agent
-section).
+Agent needs a Slack bot token and a Resend API key. Real email delivery also requires
+`EMAIL_FROM_ADDRESS` to use a custom domain verified in Resend; a normal `gmail.com` sender will
+be rejected (see `.env.example`'s Communication Agent section).
+
+### Supabase setup
+
+The web application uses Supabase for authentication and durable conversation storage:
+
+1. Create a Supabase project and copy its writable Postgres connection string into `DATABASE_URL`.
+2. Copy the project URL and publishable API key into `SUPABASE_URL` and
+   `SUPABASE_PUBLISHABLE_KEY`.
+3. Apply the versioned schema and row-level security policies:
+
+   ```bash
+   .venv/Scripts/python.exe scripts/apply_supabase_migrations.py
+   ```
+
+4. In Supabase **Authentication → Users**, create the application user after applying the
+   migrations so the profile-creation trigger can create its matching `profiles` row.
+5. Put that user's credentials in `SMOKE_TEST_EMAIL` and `SMOKE_TEST_PASSWORD`, then verify Auth,
+   RLS, persistence, and logout revocation:
+
+   ```bash
+   .venv/Scripts/python.exe scripts/check_persistent_sessions.py
+   ```
 
 ## Usage
 
@@ -153,13 +177,16 @@ section).
 .venv/Scripts/python.exe scripts/chat.py
 ```
 
-**Full web app** (needs the same `.env` as above, plus `APP_USERS_JSON` — generate a password
-hash with `scripts/hash_password.py`):
+**Full web app** (needs the same `.env` as above plus a provisioned Supabase Auth user):
 
 ```bash
 .venv/Scripts/python.exe -m uvicorn api.main:app --reload --port 8000
 cd web && npm install && npm run dev   # in a separate terminal — serves http://localhost:3000
 ```
+
+The persistence path has been verified against Supabase (Auth, RLS, durable turn round-trip, and
+logout revocation) and through the complete local API smoke test. The deployed Render/Vercel
+smoke test remains the final post-deployment check.
 
 Example questions to try, one per agent:
 
@@ -187,4 +214,4 @@ velocity to what the docs promised"* routes to both Performance and Knowledge co
 - **Agentic tracing metrics** — the evaluation harness currently checks answer correctness;
   tool-use-correctness and task-completion metrics (which need additional instrumentation) aren't
   wired up yet.
-- Persistent conversation memory
+- Long-conversation summarization beyond the current persisted-history + five-turn prompt window

@@ -1,7 +1,17 @@
-import type { AgentResultResponse, ApiErrorBody, ChatResponse, LoginResponse, MeResponse, TraceEvent } from "./types";
+import type {
+  AgentResultResponse,
+  ApiErrorBody,
+  ChatResponse,
+  ConversationDetail,
+  ConversationSummary,
+  LoginResponse,
+  MeResponse,
+  TraceEvent,
+} from "./types";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
-const TOKEN_STORAGE_KEY = "enterprise-ai-token";
+const ACCESS_TOKEN_KEY = "enterprise-ai-access-token";
+const REFRESH_TOKEN_KEY = "enterprise-ai-refresh-token";
 
 export class ApiError extends Error {
   status: number;
@@ -14,22 +24,51 @@ export class ApiError extends Error {
   }
 }
 
-// Guarded for the (unlikely, but cheap-to-guard) case this module is ever evaluated during
-// server rendering rather than only from Client Components' event handlers/effects.
 export function getToken(): string | null {
   if (typeof window === "undefined") return null;
-  return window.localStorage.getItem(TOKEN_STORAGE_KEY);
+  return window.localStorage.getItem(ACCESS_TOKEN_KEY);
 }
 
-export function setToken(token: string): void {
-  window.localStorage.setItem(TOKEN_STORAGE_KEY, token);
+function getRefreshToken(): string | null {
+  if (typeof window === "undefined") return null;
+  return window.localStorage.getItem(REFRESH_TOKEN_KEY);
 }
 
-export function clearToken(): void {
-  window.localStorage.removeItem(TOKEN_STORAGE_KEY);
+export function setSession(session: LoginResponse): void {
+  window.localStorage.setItem(ACCESS_TOKEN_KEY, session.token);
+  window.localStorage.setItem(REFRESH_TOKEN_KEY, session.refresh_token);
 }
 
-async function request<T>(path: string, options: RequestInit = {}, auth = true): Promise<T> {
+export function clearSession(): void {
+  window.localStorage.removeItem(ACCESS_TOKEN_KEY);
+  window.localStorage.removeItem(REFRESH_TOKEN_KEY);
+}
+
+let refreshInFlight: Promise<boolean> | null = null;
+
+async function refreshSession(): Promise<boolean> {
+  if (refreshInFlight) return refreshInFlight;
+  refreshInFlight = (async () => {
+    const refreshToken = getRefreshToken();
+    if (!refreshToken) return false;
+    const response = await fetch(`${API_BASE_URL}/auth/refresh`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ refresh_token: refreshToken }),
+    });
+    if (!response.ok) {
+      clearSession();
+      return false;
+    }
+    setSession((await response.json()) as LoginResponse);
+    return true;
+  })().finally(() => {
+    refreshInFlight = null;
+  });
+  return refreshInFlight;
+}
+
+async function request<T>(path: string, options: RequestInit = {}, auth = true, retry = true): Promise<T> {
   const headers = new Headers(options.headers);
   headers.set("Content-Type", "application/json");
   if (auth) {
@@ -38,18 +77,22 @@ async function request<T>(path: string, options: RequestInit = {}, auth = true):
   }
 
   const response = await fetch(`${API_BASE_URL}${path}`, { ...options, headers });
-
+  if (response.status === 401 && auth && retry && (await refreshSession())) {
+    return request<T>(path, options, auth, false);
+  }
   if (response.status === 204) return undefined as T;
 
   const body = await response.json();
-  if (!response.ok) {
-    throw new ApiError(response.status, body as ApiErrorBody);
-  }
+  if (!response.ok) throw new ApiError(response.status, body as ApiErrorBody);
   return body as T;
 }
 
 export function login(email: string, password: string): Promise<LoginResponse> {
-  return request<LoginResponse>("/auth/login", { method: "POST", body: JSON.stringify({ email, password }) }, false);
+  return request<LoginResponse>(
+    "/auth/login",
+    { method: "POST", body: JSON.stringify({ email, password }) },
+    false,
+  );
 }
 
 export function me(): Promise<MeResponse> {
@@ -60,38 +103,48 @@ export function logout(): Promise<void> {
   return request<void>("/auth/logout", { method: "POST" });
 }
 
-/**
- * /chat streams Server-Sent Events (api/chat.py) rather than returning one JSON response — this
- * powers the live "Working" trace panel. Uses fetch()+a manual ReadableStream reader instead of
- * the browser's native EventSource specifically because EventSource can't send a custom
- * Authorization header, and putting the session token in the URL as a query param instead would
- * violate the same "never put sensitive data in a URL" rule this project already follows
- * everywhere else.
- *
- * `onEvent` receives every event (including `done`/`error`) as it arrives — the trace panel
- * renders directly off that stream. This function additionally resolves with the final
- * ChatResponse (from the `done` event) or throws (on an `error` event), so callers who only want
- * the final answer don't have to duplicate that extraction logic themselves.
- */
-export async function streamChatMessage(message: string, onEvent: (event: TraceEvent) => void): Promise<ChatResponse> {
-  const headers = new Headers();
-  headers.set("Content-Type", "application/json");
+export function listConversations(): Promise<ConversationSummary[]> {
+  return request<ConversationSummary[]>("/conversations", { method: "GET" });
+}
+
+export function createConversation(): Promise<ConversationSummary> {
+  return request<ConversationSummary>("/conversations", {
+    method: "POST",
+    body: JSON.stringify({ title: "New conversation" }),
+  });
+}
+
+export function getConversation(id: string): Promise<ConversationDetail> {
+  return request<ConversationDetail>(`/conversations/${id}`, { method: "GET" });
+}
+
+export function deleteConversation(id: string): Promise<void> {
+  return request<void>(`/conversations/${id}`, { method: "DELETE" });
+}
+
+export async function streamChatMessage(
+  conversationId: string,
+  message: string,
+  onEvent: (event: TraceEvent) => void,
+  retry = true,
+): Promise<ChatResponse> {
+  const headers = new Headers({ "Content-Type": "application/json" });
   const token = getToken();
   if (token) headers.set("Authorization", `Bearer ${token}`);
 
   const response = await fetch(`${API_BASE_URL}/chat`, {
     method: "POST",
     headers,
-    body: JSON.stringify({ message }),
+    body: JSON.stringify({ conversation_id: conversationId, message }),
   });
-
+  if (response.status === 401 && retry && (await refreshSession())) {
+    return streamChatMessage(conversationId, message, onEvent, false);
+  }
   if (!response.ok) {
     const body = await response.json();
     throw new ApiError(response.status, body as ApiErrorBody);
   }
-  if (!response.body) {
-    throw new Error("Streaming response has no body.");
-  }
+  if (!response.body) throw new Error("Streaming response has no body.");
 
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
@@ -103,13 +156,11 @@ export async function streamChatMessage(message: string, onEvent: (event: TraceE
     const { done, value } = await reader.read();
     if (done) break;
     buffer += decoder.decode(value, { stream: true });
-
     let boundary: number;
     while ((boundary = buffer.indexOf("\n\n")) !== -1) {
       const rawEvent = buffer.slice(0, boundary).trim();
       buffer = buffer.slice(boundary + 2);
       if (!rawEvent.startsWith("data:")) continue;
-
       const event = JSON.parse(rawEvent.slice("data:".length).trim()) as TraceEvent;
       onEvent(event);
       if (event.type === "done") finalResult = event.result;
@@ -122,17 +173,27 @@ export async function streamChatMessage(message: string, onEvent: (event: TraceE
   throw new Error("Stream ended without a result.");
 }
 
-export function confirmPending(agent: string): Promise<AgentResultResponse> {
-  return request<AgentResultResponse>("/pending/confirm", { method: "POST", body: JSON.stringify({ agent }) });
+export function confirmPending(conversationId: string, agent: string): Promise<AgentResultResponse> {
+  return request<AgentResultResponse>("/pending/confirm", {
+    method: "POST",
+    body: JSON.stringify({ conversation_id: conversationId, agent }),
+  });
 }
 
-export function cancelPending(agent: string): Promise<AgentResultResponse> {
-  return request<AgentResultResponse>("/pending/cancel", { method: "POST", body: JSON.stringify({ agent }) });
+export function cancelPending(conversationId: string, agent: string): Promise<AgentResultResponse> {
+  return request<AgentResultResponse>("/pending/cancel", {
+    method: "POST",
+    body: JSON.stringify({ conversation_id: conversationId, agent }),
+  });
 }
 
-export function revisePending(agent: string, editInstructions: string): Promise<AgentResultResponse> {
+export function revisePending(
+  conversationId: string,
+  agent: string,
+  editInstructions: string,
+): Promise<AgentResultResponse> {
   return request<AgentResultResponse>("/pending/revise", {
     method: "POST",
-    body: JSON.stringify({ agent, edit_instructions: editInstructions }),
+    body: JSON.stringify({ conversation_id: conversationId, agent, edit_instructions: editInstructions }),
   });
 }

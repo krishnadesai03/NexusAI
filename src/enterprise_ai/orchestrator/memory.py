@@ -30,7 +30,11 @@ class ConversationMemory:
 
     def add_turn(self, user_request: str, results: dict[str, AgentResult]) -> None:
         answers = {name: result.content for name, result in results.items()}
-        self._turns.append(_Turn(user_request=user_request, agent_answers=answers))
+        self.add_stored_turn(user_request, answers)
+
+    def add_stored_turn(self, user_request: str, agent_answers: dict[str, str]) -> None:
+        """Hydrate a previously persisted turn without reconstructing AgentResult objects."""
+        self._turns.append(_Turn(user_request=user_request, agent_answers=agent_answers))
         if len(self._turns) > self._max_turns:
             self._turns = self._turns[-self._max_turns :]
 

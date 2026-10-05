@@ -244,12 +244,16 @@ async def build_shared_resources() -> SharedResources:
     )
 
 
-def build_session_orchestrator(shared: SharedResources, user_display_name: str | None = None) -> Orchestrator:
+def build_session_orchestrator(
+    shared: SharedResources,
+    user_display_name: str | None = None,
+    memory: ConversationMemory | None = None,
+) -> Orchestrator:
     """Cheap, no I/O — safe to call once per login. Every agent except communication is shared
     directly from `shared`; communication gets a fresh instance so `self._pending` (the staged
     HITL draft) is isolated per session, same reasoning as ConversationMemory below.
 
-    `user_display_name` (the real logged-in user's name, from APP_USERS_JSON via api/auth.py)
+    `user_display_name` (the real logged-in user's name, from Supabase Auth via api/auth.py)
     lets CommunicationAgent sign drafted emails with an actual name instead of a placeholder like
     "[Your Name]" — optional since callers without a real login session (scripts/chat.py) have no
     name to provide."""
@@ -272,7 +276,12 @@ def build_session_orchestrator(shared: SharedResources, user_display_name: str |
         "communication": communication_agent,
     }
 
-    return Orchestrator(router=shared.router, agents=agents, memory=ConversationMemory(), tool_cache=ToolCache())
+    return Orchestrator(
+        router=shared.router,
+        agents=agents,
+        memory=memory or ConversationMemory(),
+        tool_cache=ToolCache(),
+    )
 
 
 async def close_shared_resources(shared: SharedResources) -> None:

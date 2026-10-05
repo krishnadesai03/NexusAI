@@ -2,7 +2,7 @@
 
 import { useState, type SubmitEvent } from "react";
 import { useRouter } from "next/navigation";
-import { ApiError, login, setToken } from "@/lib/api";
+import { ApiError, login, setSession } from "@/lib/api";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -16,8 +16,8 @@ export default function LoginPage() {
     setError(null);
     setSubmitting(true);
     try {
-      const { token } = await login(email, password);
-      setToken(token);
+      const session = await login(email, password);
+      setSession(session);
       router.push("/chat");
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Something went wrong. Please try again.");

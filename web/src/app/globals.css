@@ -180,6 +180,78 @@ input {
   overflow: hidden;
 }
 
+.conversation-sidebar {
+  width: 240px;
+  flex-shrink: 0;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: #111827;
+  color: white;
+  border-right: 1px solid #263244;
+}
+
+.conversation-sidebar-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.conversation-sidebar-header button {
+  width: 28px;
+  height: 28px;
+  border: 1px solid #475569;
+  border-radius: 7px;
+  background: transparent;
+  color: white;
+  font-size: 18px;
+}
+
+.conversation-list {
+  overflow-y: auto;
+  padding: 0 8px 12px;
+}
+
+.conversation-row {
+  display: flex;
+  align-items: center;
+  border-radius: 7px;
+  margin-bottom: 4px;
+}
+
+.conversation-row.active {
+  background: #273449;
+}
+
+.conversation-open,
+.conversation-delete {
+  border: 0;
+  background: transparent;
+  color: #dbe3ef;
+}
+
+.conversation-open {
+  flex: 1;
+  min-width: 0;
+  padding: 10px 8px;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.conversation-delete {
+  padding: 8px;
+  color: #94a3b8;
+}
+
+.conversation-delete:hover {
+  color: white;
+}
+
 .chat-main {
   /* fixed height (not min-height) so .chat-body's overflow-y:auto is what scrolls — otherwise
      the flex column grows past the viewport and the whole document scrolls instead, taking the
@@ -535,6 +607,17 @@ input {
   }
   50% {
     opacity: 1;
+  }
+}
+
+@media (max-width: 760px) {
+  .conversation-sidebar {
+    width: 150px;
+  }
+
+  .header-center,
+  .toggle-label {
+    display: none;
   }
 }
 

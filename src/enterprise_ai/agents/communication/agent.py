@@ -202,6 +202,26 @@ class CommunicationAgent:
     def has_pending(self) -> bool:
         return self._pending is not None
 
+    def export_pending(self) -> dict | None:
+        if self._pending is None:
+            return None
+        return {
+            "tool_calls": [[name, arguments] for name, arguments in self._pending.tool_calls],
+            "description": self._pending.description,
+        }
+
+    def restore_pending(self, payload: dict) -> None:
+        tool_calls = payload.get("tool_calls")
+        description = payload.get("description")
+        if not isinstance(tool_calls, list) or not isinstance(description, str):
+            raise ValueError("Invalid persisted pending action")
+        restored: list[tuple[str, dict]] = []
+        for item in tool_calls:
+            if not isinstance(item, list) or len(item) != 2 or not isinstance(item[0], str) or not isinstance(item[1], dict):
+                raise ValueError("Invalid persisted tool call")
+            restored.append((item[0], item[1]))
+        self._pending = _PendingAction(tool_calls=restored, description=description)
+
     async def confirm_pending(self) -> AgentResult:
         if self._pending is None:
             return AgentResult(agent_name="communication", content="There's nothing pending to confirm.", metadata={"citations": []})

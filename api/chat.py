@@ -1,12 +1,4 @@
-"""POST /chat streams over Server-Sent Events rather than returning one JSON blob — this is what
-lets the frontend's "Working" trace panel show routing/agent/tool-call steps live, as they
-actually happen inside Orchestrator.handle(), instead of only after the whole request finishes.
-Every event is a JSON object on its own `data: ...` line; the stream always ends with either a
-`done` event (carrying the same ChatResponse shape /chat always returned) or an `error` event.
-
-Validation that needs to change the HTTP status code (empty message, the 409 pending-conflict
-guard) happens *before* the stream starts, since headers can't change once streaming begins.
-"""
+"""Persistent, SSE-streaming chat endpoint."""
 
 from __future__ import annotations
 
@@ -16,39 +8,41 @@ import json
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 
-from api.dependencies import get_current_session
+from api.auth_service import AuthenticatedUser
+from api.conversation_store import ConversationNotFoundError, ConversationStore
+from api.dependencies import get_conversation_store, get_current_session, get_shared_resources
+from api.orchestration import build_conversation_orchestrator
 from api.schemas import ChatRequest, ChatResponse, agent_result_to_response
-from api.sessions import SessionState
-from enterprise_ai.core.agent import ConfirmableAgent
-from enterprise_ai.orchestrator.orchestrator import Orchestrator
+from enterprise_ai.bootstrap import SharedResources
+from enterprise_ai.core.agent import PersistableConfirmableAgent
 
 router = APIRouter(tags=["chat"])
 
-_STREAM_DONE = object()  # internal sentinel — never serialized, just tells the generator to stop
-
-
-def _find_pending_agent(orchestrator: Orchestrator) -> str | None:
-    """Backstop for the HITL flow: the Communication Agent only ever holds one pending action at
-    a time (learnings.md #8), so a second unrelated message arriving before it's resolved could
-    silently orphan the first draft. Enforced here, not just by disabling the frontend's input box,
-    since the frontend disabling itself is a UX nicety, not something the backend can trust."""
-    for name in orchestrator.agent_names():
-        agent = orchestrator.get_agent(name)
-        if isinstance(agent, ConfirmableAgent) and agent.has_pending():
-            return name
-    return None
+_STREAM_DONE = object()
 
 
 @router.post("/chat")
-async def chat(payload: ChatRequest, session: SessionState = Depends(get_current_session)) -> StreamingResponse:
+async def chat(
+    payload: ChatRequest,
+    user: AuthenticatedUser = Depends(get_current_session),
+    shared: SharedResources = Depends(get_shared_resources),
+    store: ConversationStore = Depends(get_conversation_store),
+) -> StreamingResponse:
     if not payload.message.strip():
         raise HTTPException(status_code=400, detail="Message cannot be empty.")
 
-    pending_agent = _find_pending_agent(session.orchestrator)
-    if pending_agent is not None:
+    try:
+        pending = await store.get_pending(user.id, payload.conversation_id)
+        orchestrator = await build_conversation_orchestrator(
+            shared, store, user, payload.conversation_id
+        )
+    except ConversationNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Conversation not found.") from exc
+
+    if pending is not None:
         raise HTTPException(
             status_code=409,
-            detail={"error": "There's already a pending action to resolve first.", "agent": pending_agent},
+            detail={"error": "There's already a pending action to resolve first.", "agent": pending.agent_name},
         )
 
     async def event_stream():
@@ -59,16 +53,38 @@ async def chat(payload: ChatRequest, session: SessionState = Depends(get_current
 
         async def run() -> None:
             try:
-                result = await session.orchestrator.handle(payload.message, on_event)
-                response = ChatResponse(
-                    routed_to=result.routed_to,
-                    results={
-                        name: agent_result_to_response(agent_result) for name, agent_result in result.results.items()
-                    },
+                result = await orchestrator.handle(payload.message, on_event)
+                response_results = {
+                    name: agent_result_to_response(agent_result)
+                    for name, agent_result in result.results.items()
+                }
+
+                pending_agent: str | None = None
+                pending_payload: dict | None = None
+                for name in result.routed_to:
+                    agent = orchestrator.get_agent(name)
+                    if isinstance(agent, PersistableConfirmableAgent) and agent.has_pending():
+                        pending_agent = name
+                        pending_payload = agent.export_pending()
+                        break
+
+                stored_turn = await store.save_turn(
+                    user.id,
+                    payload.conversation_id,
+                    payload.message,
+                    result.routed_to,
+                    {name: value.model_dump() for name, value in response_results.items()},
+                    pending_agent,
+                    pending_payload,
                 )
-                queue.put_nowait({"type": "done", "result": response.model_dump()})
-            except Exception as exc:  # noqa: BLE001 — reported as a stream event; an HTTP status
-                # code can no longer change at this point, headers were already sent.
+                response = ChatResponse(
+                    conversation_id=payload.conversation_id,
+                    turn_id=stored_turn.id,
+                    routed_to=result.routed_to,
+                    results=response_results,
+                )
+                queue.put_nowait({"type": "done", "result": response.model_dump(mode="json")})
+            except Exception as exc:  # noqa: BLE001 - stream errors cannot change HTTP status
                 queue.put_nowait({"type": "error", "error": str(exc)})
             finally:
                 queue.put_nowait(_STREAM_DONE)

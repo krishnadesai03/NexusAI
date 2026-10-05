@@ -21,9 +21,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from api.auth import router as auth_router
+from api.auth_service import SupabaseAuthClient, SupabaseTokenVerifier
 from api.chat import router as chat_router
+from api.conversation_store import PostgresConversationStore
+from api.conversations import router as conversations_router
 from api.pending import router as pending_router
-from api.sessions import SessionStore
 from enterprise_ai.bootstrap import build_shared_resources, close_shared_resources
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -46,8 +48,12 @@ _load_dotenv(ROOT / ".env")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     app.state.shared = await build_shared_resources()
-    app.state.sessions = SessionStore()
+    app.state.conversations = await PostgresConversationStore.connect(os.environ["DATABASE_URL"])
+    app.state.auth_client = SupabaseAuthClient.from_env()
+    app.state.token_verifier = SupabaseTokenVerifier.from_env()
     yield
+    await app.state.auth_client.close()
+    await app.state.conversations.close()
     await close_shared_resources(app.state.shared)
 
 
@@ -73,6 +79,7 @@ async def http_exception_handler(request: Request, exc: HTTPException) -> JSONRe
 
 
 app.include_router(auth_router)
+app.include_router(conversations_router)
 app.include_router(chat_router)
 app.include_router(pending_router)
 

@@ -5,31 +5,37 @@ import { useRouter } from "next/navigation";
 import {
   ApiError,
   cancelPending,
-  clearToken,
+  clearSession,
   confirmPending,
+  createConversation,
+  deleteConversation,
+  getConversation,
   getToken,
+  listConversations,
   logout as apiLogout,
   me,
   revisePending,
   streamChatMessage,
 } from "@/lib/api";
-import { clearTranscript, loadTranscript, saveTranscript } from "@/lib/transcript";
 import { applyTraceEvent, emptyTrace, type Trace } from "@/lib/trace";
-import type { AgentResultResponse, ChatTurn } from "@/lib/types";
+import type { AgentResultResponse, ChatTurn, ConversationSummary } from "@/lib/types";
 import { AgentReply } from "@/components/AgentReply";
 import { ChatInput } from "@/components/ChatInput";
 import { PendingActionCard } from "@/components/PendingActionCard";
 import { TracePanel } from "@/components/TracePanel";
 
 interface PendingRef {
-  turnId: string;
+  turnId: number;
   agentName: string;
 }
 
 export default function ChatPage() {
   const router = useRouter();
   const [displayName, setDisplayName] = useState<string | null>(null);
+  const [conversations, setConversations] = useState<ConversationSummary[]>([]);
+  const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
   const [turns, setTurns] = useState<ChatTurn[]>([]);
+  const [loading, setLoading] = useState(true);
   const [showCitations, setShowCitations] = useState(false);
   const [working, setWorking] = useState(false);
   const [trace, setTrace] = useState<Trace>(emptyTrace());
@@ -40,38 +46,77 @@ export default function ChatPage() {
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    const token = getToken();
-    if (!token) {
+    if (!getToken()) {
       router.replace("/login");
       return;
     }
 
-    me()
-      .then((res) => setDisplayName(res.display_name))
-      .catch(() => {
-        clearToken();
-        router.replace("/login");
-      });
-
-    const restored = loadTranscript();
-    setTurns(restored);
-    setPending(findPendingInTurns(restored));
-  }, [router]);
+    async function initialize() {
+      try {
+        const user = await me();
+        setDisplayName(user.display_name);
+        let items = await listConversations();
+        if (items.length === 0) items = [await createConversation()];
+        setConversations(items);
+        await openConversation(items[0].id);
+      } catch (err) {
+        handleApiError(err);
+      } finally {
+        setLoading(false);
+      }
+    }
+    void initialize();
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     scrollRef.current?.scrollIntoView({ block: "end" });
   }, [turns, pending]);
 
-  function updateTurns(next: ChatTurn[]) {
-    setTurns(next);
-    saveTranscript(next);
+  async function openConversation(id: string) {
+    setError(null);
+    const detail = await getConversation(id);
+    const restored: ChatTurn[] = detail.turns.map((turn) => ({
+      id: turn.id,
+      userMessage: turn.user_message,
+      routedTo: turn.routed_to,
+      results: turn.results,
+    }));
+    setActiveConversationId(id);
+    setTurns(restored);
+    setPending(findPendingInTurns(restored));
+    setTrace(emptyTrace());
   }
 
-  function updateTurnResult(turnId: string, agentName: string, result: AgentResultResponse) {
-    updateTurns(
-      turns.map((turn) =>
-        turn.id === turnId ? { ...turn, results: { ...turn.results, [agentName]: result } } : turn
-      )
+  async function handleNewConversation() {
+    try {
+      const created = await createConversation();
+      setConversations((current) => [created, ...current]);
+      setActiveConversationId(created.id);
+      setTurns([]);
+      setPending(null);
+      setTrace(emptyTrace());
+    } catch (err) {
+      handleApiError(err);
+    }
+  }
+
+  async function handleDeleteConversation(id: string) {
+    try {
+      await deleteConversation(id);
+      let remaining = conversations.filter((conversation) => conversation.id !== id);
+      if (remaining.length === 0) remaining = [await createConversation()];
+      setConversations(remaining);
+      if (activeConversationId === id) await openConversation(remaining[0].id);
+    } catch (err) {
+      handleApiError(err);
+    }
+  }
+
+  function updateTurnResult(turnId: number, agentName: string, result: AgentResultResponse) {
+    setTurns((current) =>
+      current.map((turn) =>
+        turn.id === turnId ? { ...turn, results: { ...turn.results, [agentName]: result } } : turn,
+      ),
     );
   }
 
@@ -79,30 +124,30 @@ export default function ChatPage() {
     try {
       await apiLogout();
     } catch {
-      // token may already be invalid/expired — logging out locally still succeeds either way
+      // Clearing the local tokens still signs this browser out if the remote session already expired.
     }
-    clearToken();
-    clearTranscript();
+    clearSession();
     router.replace("/login");
   }
 
   async function handleSend(message: string) {
+    if (!activeConversationId) return;
     setError(null);
     setSending(true);
-    setTrace(emptyTrace()); // a new query always starts a fresh graph, per the Working toggle's spec
+    setTrace(emptyTrace());
     try {
-      const response = await streamChatMessage(message, (event) => {
-        setTrace((prev) => applyTraceEvent(prev, event));
+      const response = await streamChatMessage(activeConversationId, message, (event) => {
+        setTrace((previous) => applyTraceEvent(previous, event));
       });
       const turn: ChatTurn = {
-        id: crypto.randomUUID(),
+        id: response.turn_id,
         userMessage: message,
         routedTo: response.routed_to,
         results: response.results,
       };
-      const next = [...turns, turn];
-      updateTurns(next);
-      setPending(findPendingInTurns(next));
+      setTurns((current) => [...current, turn]);
+      setPending(findPendingInTurns([...turns, turn]));
+      setConversations(await listConversations());
     } catch (err) {
       handleApiError(err);
     } finally {
@@ -111,10 +156,10 @@ export default function ChatPage() {
   }
 
   async function handleConfirm() {
-    if (!pending) return;
+    if (!pending || !activeConversationId) return;
     setPendingBusy(true);
     try {
-      const result = await confirmPending(pending.agentName);
+      const result = await confirmPending(activeConversationId, pending.agentName);
       updateTurnResult(pending.turnId, pending.agentName, result);
       setPending(null);
     } catch (err) {
@@ -125,10 +170,10 @@ export default function ChatPage() {
   }
 
   async function handleCancel() {
-    if (!pending) return;
+    if (!pending || !activeConversationId) return;
     setPendingBusy(true);
     try {
-      const result = await cancelPending(pending.agentName);
+      const result = await cancelPending(activeConversationId, pending.agentName);
       updateTurnResult(pending.turnId, pending.agentName, result);
       setPending(null);
     } catch (err) {
@@ -139,10 +184,10 @@ export default function ChatPage() {
   }
 
   async function handleRevise(editInstructions: string) {
-    if (!pending) return;
+    if (!pending || !activeConversationId) return;
     setPendingBusy(true);
     try {
-      const result = await revisePending(pending.agentName, editInstructions);
+      const result = await revisePending(activeConversationId, pending.agentName, editInstructions);
       updateTurnResult(pending.turnId, pending.agentName, result);
       setPending(result.requires_confirmation ? pending : null);
     } catch (err) {
@@ -154,51 +199,74 @@ export default function ChatPage() {
 
   function handleApiError(err: unknown) {
     if (err instanceof ApiError && err.status === 401) {
-      clearToken();
+      clearSession();
       router.replace("/login");
       return;
     }
-    if (err instanceof ApiError) {
-      setError(err.message);
-      return;
-    }
-    setError("Something went wrong reaching the server. Please try again.");
+    setError(err instanceof ApiError ? err.message : "Something went wrong reaching the server. Please try again.");
   }
 
   return (
     <div className="chat-page">
+      <aside className="conversation-sidebar">
+        <div className="conversation-sidebar-header">
+          <span>Conversations</span>
+          <button onClick={handleNewConversation} aria-label="New conversation">+</button>
+        </div>
+        <div className="conversation-list">
+          {conversations.map((conversation) => (
+            <div
+              className={`conversation-row ${conversation.id === activeConversationId ? "active" : ""}`}
+              key={conversation.id}
+            >
+              <button
+                className="conversation-open"
+                onClick={() => void openConversation(conversation.id)}
+                disabled={sending || pendingBusy}
+              >
+                {conversation.title}
+              </button>
+              <button
+                className="conversation-delete"
+                onClick={() => void handleDeleteConversation(conversation.id)}
+                disabled={sending || pendingBusy}
+                aria-label={`Delete ${conversation.title}`}
+              >
+                ×
+              </button>
+            </div>
+          ))}
+        </div>
+      </aside>
+
       <div className="chat-main">
         <header className="chat-header">
-          <div className="brand">
-            <span className="brand-logo">N</span>
-            <h1>Nexus AI</h1>
-          </div>
+          <div className="brand"><span className="brand-logo">N</span><h1>Nexus AI</h1></div>
           <div className="header-center">{displayName && <span>{displayName}</span>}</div>
           <div className="header-right">
             <label className="toggle-label">
-              <input type="checkbox" checked={working} onChange={(e) => setWorking(e.target.checked)} />
+              <input type="checkbox" checked={working} onChange={(event) => setWorking(event.target.checked)} />
               Working
             </label>
             <label className="toggle-label">
-              <input type="checkbox" checked={showCitations} onChange={(e) => setShowCitations(e.target.checked)} />
+              <input
+                type="checkbox"
+                checked={showCitations}
+                onChange={(event) => setShowCitations(event.target.checked)}
+              />
               Show citations
             </label>
-            <button className="text-button" onClick={handleLogout}>
-              Logout
-            </button>
+            <button className="text-button" onClick={handleLogout}>Logout</button>
           </div>
         </header>
 
         <div className="chat-body">
           <div className="chat-scroll-inner">
-            {turns.length === 0 && <p className="empty-state">Ask a question to get started.</p>}
-
+            {!loading && turns.length === 0 && <p className="empty-state">Ask a question to get started.</p>}
+            {loading && <p className="empty-state">Loading your conversations...</p>}
             {turns.map((turn) => (
               <div key={turn.id} style={{ display: "contents" }}>
-                <div className="user-message">
-                  <span className="message-label">You</span>
-                  {turn.userMessage}
-                </div>
+                <div className="user-message"><span className="message-label">You</span>{turn.userMessage}</div>
                 {Object.entries(turn.results).map(([agentName, result]) =>
                   result.requires_confirmation && pending?.turnId === turn.id && pending.agentName === agentName ? (
                     <PendingActionCard
@@ -211,32 +279,28 @@ export default function ChatPage() {
                     />
                   ) : (
                     <AgentReply key={agentName} result={result} showCitations={showCitations} />
-                  )
+                  ),
                 )}
               </div>
             ))}
-
             {sending && <div className="typing-indicator">Thinking...</div>}
             <div ref={scrollRef} />
           </div>
         </div>
 
         {error && <div className="inline-error">{error}</div>}
-        <ChatInput disabled={sending || pending !== null} onSend={handleSend} />
+        <ChatInput disabled={loading || sending || pending !== null} onSend={handleSend} />
       </div>
-
       {working && <TracePanel trace={trace} />}
     </div>
   );
 }
 
 function findPendingInTurns(turns: ChatTurn[]): PendingRef | null {
-  for (let i = turns.length - 1; i >= 0; i--) {
-    const turn = turns[i];
+  for (let index = turns.length - 1; index >= 0; index--) {
+    const turn = turns[index];
     for (const [agentName, result] of Object.entries(turn.results)) {
-      if (result.requires_confirmation) {
-        return { turnId: turn.id, agentName };
-      }
+      if (result.requires_confirmation) return { turnId: turn.id, agentName };
     }
   }
   return null;

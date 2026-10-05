@@ -38,12 +38,12 @@ who has never seen it before.
   programming feature, not a special library.
 - **Combining the answers:** whatever each helper found gets bundled together into one response
   handed back to you.
-- **Remembering the conversation:** a short list of the last few things you asked and how they were
-  answered, kept only in the running program's memory — nothing fancy, and it disappears the moment
-  the program stops.
-- **Pausing before risky actions:** the one helper that can actually send something just remembers
-  "here's a draft I haven't sent yet" as a simple note. Nothing goes out until you click Send —
-  there's no special "pause the whole program" machinery behind it.
+- **Remembering the conversation:** complete conversations are stored under the signed-in user's
+  Supabase account, so they survive restarts and appear again later. Only the latest five turns are
+  handed to the AI each time, keeping prompts and cost bounded.
+- **Pausing before risky actions:** unsent drafts are stored in Supabase and restored after a
+  restart. Nothing goes out until the owner clicks Send, and the database prevents the same draft
+  from being claimed twice.
 - **Watching it work live:** as the traffic cop and helpers work, they each announce small updates
   ("I picked these helpers," "this one just finished," "this one is now looking something up"). The
   web page listens for these announcements and updates your screen as they happen, instead of just
@@ -282,12 +282,16 @@ enough to catch everything — there's no second door it could have gone through
 
 - Add dependency-aware workflows so one helper can safely use another helper's result in the same
   request, followed by orchestration-level evaluation and production observability.
-- Persist conversations, login sessions, cached state, and pending approvals; today they disappear
-  when the backend process restarts.
+- Add optional long-conversation summarization. Complete transcripts and pending approvals are now
+  durable in Supabase, while only the latest five turns are rehydrated into each AI request.
 - Build a maintainable document ingestion/update pipeline instead of relying on fixture seeding.
-- Add user-based authorization and deployment hardening before treating the application as a real
-  enterprise system.
+- Continue deployment hardening before treating the application as a real enterprise system;
+  Supabase Auth and row-level ownership controls are now implemented.
 - Consider caching an exact Database-Agent question → generated-SQL mapping. Raw SQL results are
   already cached per session; this additional cache would only avoid part of the LLM work.
-- The DeepEval regression harness and 83-test offline suite are automated locally/through CI. The
+- The DeepEval regression harness and 84-test offline suite are automated locally/through CI. The
+
   safe deployed stage/cancel smoke test should still be run regularly against the live backend.
+- Verify a custom sender domain in Resend before enabling real production email sends; unverified
+  consumer domains such as `gmail.com` are rejected, while Slack and email draft/cancel remain
+  available for safe smoke testing.

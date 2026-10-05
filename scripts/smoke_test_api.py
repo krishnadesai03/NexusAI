@@ -6,9 +6,8 @@ old token is actually dead afterward. Not part of the automated test suite (test
 only ever uses fakes/TestClient) — this hits a real running process and its real dependencies.
 
 Works against either a local dev server or the real deployed Render backend — set
-SMOKE_TEST_BASE_URL to switch (defaults to local). Needs real login credentials that match an
-entry in APP_USERS_JSON (this script can't derive a plaintext password from the bcrypt hash
-stored there), supplied separately via SMOKE_TEST_EMAIL/SMOKE_TEST_PASSWORD.
+SMOKE_TEST_BASE_URL to switch (defaults to local). Needs a provisioned Supabase Auth login,
+supplied separately via SMOKE_TEST_EMAIL/SMOKE_TEST_PASSWORD.
 
 By default this only ever stages-then-cancels a Communication Agent draft, so it never actually
 posts to Slack or sends a real email on every run. Set SMOKE_TEST_CONFIRM_SEND=1 to additionally
@@ -73,13 +72,22 @@ async def _wait_for_healthy(client: httpx.AsyncClient, base_url: str, attempts: 
     raise SystemExit(f"/health never became healthy after {attempts} attempts — is the server actually running?")
 
 
-async def _consume_chat_stream(client: httpx.AsyncClient, base_url: str, token: str, message: str) -> dict:
+async def _consume_chat_stream(
+    client: httpx.AsyncClient,
+    base_url: str,
+    token: str,
+    conversation_id: str,
+    message: str,
+) -> dict:
     """POST /chat streams Server-Sent Events (routing_decided, agent_started/finished, tool_called/
     tool_result, then a terminal done/error) — this reads the real stream the same way the
     frontend's TracePanel does, not just a plain JSON response, since that's the actual contract."""
     events: list[dict] = []
     async with client.stream(
-        "POST", f"{base_url}/chat", json={"message": message}, headers={"Authorization": f"Bearer {token}"}
+        "POST",
+        f"{base_url}/chat",
+        json={"conversation_id": conversation_id, "message": message},
+        headers={"Authorization": f"Bearer {token}"},
     ) as response:
         response.raise_for_status()
         async for line in response.aiter_lines():
@@ -104,8 +112,7 @@ async def main() -> None:
 
     if not email or not password:
         raise SystemExit(
-            "SMOKE_TEST_EMAIL and SMOKE_TEST_PASSWORD must be set to a real entry in APP_USERS_JSON "
-            "(plaintext password — this script can't derive one from the bcrypt hash)."
+            "SMOKE_TEST_EMAIL and SMOKE_TEST_PASSWORD must be set to a provisioned Supabase Auth user."
         )
 
     print(f"Target: {base_url}")
@@ -124,11 +131,20 @@ async def main() -> None:
         print("3. /auth/me confirms the session")
         resp = await client.get(f"{base_url}/auth/me", headers={"Authorization": f"Bearer {token}"})
         assert resp.status_code == 200, f"/auth/me failed: {resp.status_code} {resp.text}"
-        assert resp.json()["display_name"] == login_data["display_name"]
+        assert resp.json()["display_name"], "/auth/me returned an empty profile display name"
         print(f"  /auth/me -> {resp.json()}")
 
-        print("4. Chat: a read-only question routes and answers normally")
-        result = await _consume_chat_stream(client, base_url, token, "What's our PTO policy?")
+        print("4. Create a persistent conversation")
+        resp = await client.post(
+            f"{base_url}/conversations",
+            json={"title": "Deployment smoke test"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 201, f"conversation creation failed: {resp.status_code} {resp.text}"
+        conversation_id = resp.json()["id"]
+
+        print("5. Chat: a read-only question routes and answers normally")
+        result = await _consume_chat_stream(client, base_url, token, conversation_id, "What's our PTO policy?")
         print(f"  routed_to: {result['routed_to']}")
         assert "knowledge" in result["routed_to"], f"expected knowledge in routing, got {result['routed_to']}"
         knowledge_result = result["results"]["knowledge"]
@@ -136,9 +152,9 @@ async def main() -> None:
         assert not knowledge_result["requires_confirmation"]
         print(f"  answer: {knowledge_result['content'][:200]}")
 
-        print("5. Chat: a database question uses the deployed read-only connection")
+        print("6. Chat: a database question uses the deployed read-only connection")
         result = await _consume_chat_stream(
-            client, base_url, token, "How many employees are in the company database?"
+            client, base_url, token, conversation_id, "How many employees are in the company database?"
         )
         print(f"  routed_to: {result['routed_to']}")
         assert "database" in result["routed_to"], f"expected database in routing, got {result['routed_to']}"
@@ -147,37 +163,58 @@ async def main() -> None:
         assert "temporarily unavailable" not in database_result["content"].lower()
         print(f"  answer: {database_result['content'][:200]}")
 
-        print("6. Chat: a send request stages a pending HITL draft, does not send yet")
+        print("7. Chat: a send request stages a persistent pending HITL draft")
         result = await _consume_chat_stream(
-            client, base_url, token, "Post a Slack message saying the API smoke test ran successfully."
+            client,
+            base_url,
+            token,
+            conversation_id,
+            "Post a Slack message saying the API smoke test ran successfully.",
         )
         assert "communication" in result["routed_to"], f"expected communication in routing, got {result['routed_to']}"
         comm_result = result["results"]["communication"]
         assert comm_result["requires_confirmation"], "expected a staged draft awaiting confirmation"
         print(f"  drafted: {comm_result['content'][:200]}")
 
-        print("7. Cancel it (default: never actually sends on every smoke-test run)")
+        print("8. Cancel it (default: never actually sends on every smoke-test run)")
         resp = await client.post(
-            f"{base_url}/pending/cancel", json={"agent": "communication"}, headers={"Authorization": f"Bearer {token}"}
+            f"{base_url}/pending/cancel",
+            json={"conversation_id": conversation_id, "agent": "communication"},
+            headers={"Authorization": f"Bearer {token}"},
         )
         assert resp.status_code == 200, f"/pending/cancel failed: {resp.status_code} {resp.text}"
         print(f"  {resp.json()['content']}")
 
-        print("8. A follow-up chat message works again now nothing is pending")
-        result = await _consume_chat_stream(client, base_url, token, "What's our expense policy?")
+        print("9. Reloading the conversation returns its persisted transcript")
+        resp = await client.get(
+            f"{base_url}/conversations/{conversation_id}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 200
+        assert len(resp.json()["turns"]) == 3
+        print("  persisted turns -> 3")
+
+        print("10. A follow-up chat message works again now nothing is pending")
+        result = await _consume_chat_stream(
+            client, base_url, token, conversation_id, "What's our expense policy?"
+        )
         assert "knowledge" in result["routed_to"]
         print("  OK — no lingering 409 pending-conflict from the cancelled draft")
 
         if confirm_send:
-            print("9. SMOKE_TEST_CONFIRM_SEND set — staging and REALLY sending one message")
+            print("11. SMOKE_TEST_CONFIRM_SEND set — staging and REALLY sending one message")
             result = await _consume_chat_stream(
-                client, base_url, token, "Post a Slack message saying the API smoke test's confirm path ran."
+                client,
+                base_url,
+                token,
+                conversation_id,
+                "Post a Slack message saying the API smoke test's confirm path ran.",
             )
             comm_result = result["results"]["communication"]
             assert comm_result["requires_confirmation"]
             resp = await client.post(
                 f"{base_url}/pending/confirm",
-                json={"agent": "communication"},
+                json={"conversation_id": conversation_id, "agent": "communication"},
                 headers={"Authorization": f"Bearer {token}"},
             )
             assert resp.status_code == 200, f"/pending/confirm failed: {resp.status_code} {resp.text}"
@@ -185,9 +222,16 @@ async def main() -> None:
             print(f"  {confirmed['content']}")
             assert "failed" not in confirmed["content"].lower(), f"real send reported a failure: {confirmed}"
         else:
-            print("9. Skipped real send (set SMOKE_TEST_CONFIRM_SEND=1 to also test a real confirm -> send)")
+            print("11. Skipped real send (set SMOKE_TEST_CONFIRM_SEND=1 to also test a real confirm -> send)")
 
-        print("10. Logout invalidates the session")
+        print("12. Delete the smoke-test conversation")
+        resp = await client.delete(
+            f"{base_url}/conversations/{conversation_id}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 204
+
+        print("13. Logout invalidates the session")
         resp = await client.post(f"{base_url}/auth/logout", headers={"Authorization": f"Bearer {token}"})
         assert resp.status_code == 204, f"/auth/logout failed: {resp.status_code} {resp.text}"
 

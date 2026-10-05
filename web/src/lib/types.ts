@@ -1,7 +1,3 @@
-// Mirrors api/schemas.py exactly — the locked API contract from learnings.md's Component 9
-// design discussion. Keep these two in sync by hand; there's no shared codegen between the
-// Python backend and this frontend.
-
 export interface AgentResultResponse {
   content: string;
   citations: string[];
@@ -9,17 +5,43 @@ export interface AgentResultResponse {
 }
 
 export interface ChatResponse {
+  conversation_id: string;
+  turn_id: number;
   routed_to: string[];
   results: Record<string, AgentResultResponse>;
 }
 
 export interface LoginResponse {
   token: string;
+  refresh_token: string;
+  expires_in: number;
   display_name: string;
 }
 
 export interface MeResponse {
+  user_id: string;
+  email: string;
   display_name: string;
+  employee_role: string;
+}
+
+export interface ConversationSummary {
+  id: string;
+  title: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ConversationTurnResponse {
+  id: number;
+  user_message: string;
+  routed_to: string[];
+  results: Record<string, AgentResultResponse>;
+  created_at: string;
+}
+
+export interface ConversationDetail extends ConversationSummary {
+  turns: ConversationTurnResponse[];
 }
 
 export interface ApiErrorBody {
@@ -27,18 +49,13 @@ export interface ApiErrorBody {
   agent?: string;
 }
 
-// One rendered turn in the chat transcript, persisted to sessionStorage as-is (Component 9's
-// "sessionStorage is fine" decision) — a user message plus every agent's reply to it, keyed the
-// same way ChatResponse.results is.
 export interface ChatTurn {
-  id: string;
+  id: number;
   userMessage: string;
   routedTo: string[];
   results: Record<string, AgentResultResponse>;
 }
 
-// Live orchestration-trace events streamed over /chat's SSE response (api/chat.py) — mirrors
-// the plain dicts enterprise_ai.core.agent.emit_event sends. Powers the "Working" trace panel.
 export type TraceEvent =
   | { type: "routing_decided"; agents: string[]; reasoning: string }
   | { type: "agent_started"; agent: string }

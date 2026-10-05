@@ -77,7 +77,7 @@ e.g. `scripts/smoke_test_llm.py` — these need `OPENAI_API_KEY` set and make re
 server (local `uvicorn` or the deployed Render URL via `SMOKE_TEST_BASE_URL`), exercising login ->
 chat (consuming the real SSE stream) -> the Communication Agent's stage/cancel HITL path ->
 logout, plus confirming the token is actually dead afterward. Needs `SMOKE_TEST_EMAIL`/
-`SMOKE_TEST_PASSWORD` (a real login matching an `APP_USERS_JSON` entry); by default it only
+`SMOKE_TEST_PASSWORD` (a provisioned Supabase Auth login); by default it only
 stages-then-cancels a Communication Agent draft so it never spams Slack/email on every run — set
 `SMOKE_TEST_CONFIRM_SEND=1` to also exercise one real confirm -> real send.
 
@@ -87,9 +87,8 @@ Ruff is configured for correctness-focused linting (no repository-wide formatter
 .venv/Scripts/python.exe -m ruff check .
 ```
 
-Run the web API + frontend locally (Component 9/10; needs the same `.env` as everything else,
-plus `APP_USERS_JSON` — generate an entry's hash with
-`.venv/Scripts/python.exe scripts/hash_password.py`):
+Run the web API + frontend locally (needs the same `.env` as everything else plus Supabase Auth
+configuration and a provisioned user):
 
 ```bash
 .venv/Scripts/python.exe -m uvicorn api.main:app --reload --port 8000
@@ -210,18 +209,19 @@ lives on the `Orchestrator`, not per-agent, because routing can send consecutive
 agents — a per-agent history would silently lose continuity the moment that happens. It's a rolling,
 FIFO-trimmed window of the last 5 turns, threaded into whichever agent(s) the current turn routes to
 via an optional `history` param on `Agent.handle()` (default `None`, so every earlier single-turn
-call/test still works unchanged). Session-only, in-process — gone when the process exits, no
-persistence yet.
+call/test still works unchanged). Full turns are stored in Supabase while only this five-turn
+window is rehydrated into each request's prompt, so restarts do not erase memory or grow prompts
+without bound.
 
 **Shared wiring (`bootstrap.py`)** — the construction logic every entry point reuses, split in two:
 `build_shared_resources()` builds everything expensive and stateless exactly once per process (LLM/
 embedding clients, DB/vector-store connections, Router, and the Knowledge/Performance/Database
 Agents — none of which accumulate per-conversation state). `build_session_orchestrator()` is the
-cheap per-session slice — a fresh `ConversationMemory` and a fresh `CommunicationAgent`, since its
-staged-draft state (`self._pending`) can't be shared across sessions without one user's draft
-leaking into another's confirm click. `scripts/chat.py` calls both back-to-back for its one CLI
-session; the same two functions also back the real multi-session FastAPI backend in `api/` (see
-below). Each agent degrades to a small `_Unseeded*Agent` stub with a clear unavailable or
+cheap per-request slice: it receives the persisted conversation's five-turn memory window and
+creates a fresh CommunicationAgent. Pending drafts are serialized separately, never shared
+between users, and restored only for confirmation or revision. `scripts/chat.py` still uses an
+in-memory orchestrator for its one CLI session; FastAPI rehydrates one from Supabase per request.
+Each agent degrades to a small `_Unseeded*Agent` stub with a clear unavailable or
 not-configured message if its external dependency, credentials, or seed data aren't available.
 Startup waits are bounded by `STARTUP_DEPENDENCY_TIMEOUT_SECONDS` (15 seconds by default), so a
 pgvector/Postgres or Atlassian outage cannot indefinitely block the API's `/health` endpoint.
@@ -230,15 +230,14 @@ pgvector/Postgres or Atlassian outage cannot indefinitely block the API's `/heal
 implemented).** A separate, top-level `api/` package (NOT `src/enterprise_ai/api/`, which is an
 empty placeholder left from Component 0.5's original scaffold — don't confuse the two) is a real,
 tested FastAPI backend: `api/main.py` (app + CORS + lifespan-managed `SharedResources` +
-normalized `{"error": ...}` responses), `api/auth.py` (bcrypt login against `APP_USERS_JSON`,
-bearer-token sessions, no signup endpoint by design), `api/chat.py` (`POST /chat`, streamed as
-Server-Sent Events), `api/pending.py` (`POST /pending/{confirm,cancel,revise}`, generic over any
-`ConfirmableAgent`), `api/sessions.py` (in-process token → `SessionState` store, 24h TTL),
-`api/dependencies.py` (FastAPI `Depends()` seams so tests can override without a real DB/LLM
-connection), `api/schemas.py`. A matching Next.js frontend lives in `web/` (login, streaming chat,
-a `PendingActionCard` driving the same 3-option HITL menu as `scripts/chat.py`'s CLI version, and a
-live `TracePanel`). Both sides are unit-tested together in `tests/unit/test_api.py` (16 tests via
-FastAPI's `TestClient` + fakes) — part of the 83/83 passing full suite.
+normalized `{"error": ...}` responses), `api/auth.py` + `api/auth_service.py` (Supabase Auth
+access/refresh tokens and JWT verification), `api/conversation_store.py` (user-owned durable
+turns/pending actions), `api/conversations.py` (history CRUD), `api/chat.py` (`POST /chat`, streamed
+as Server-Sent Events), and `api/pending.py` (durable confirm/cancel/revise). A matching Next.js
+frontend lives in `web/` with a conversation sidebar, restored transcripts, live tracing, and
+pending-action controls. Versioned schema/RLS migrations live under `supabase/migrations/`;
+authenticated clients can read only their rows and cannot write server-managed state. The full
+offline suite has 84 tests.
 
 The streaming `/chat` response is powered by a live trace mechanism threaded through the whole
 orchestrator: `Agent.handle()` carries an optional third `on_event: OnEvent | None` callback
@@ -255,13 +254,13 @@ through each platform's dashboard, not committed IaC — no `render.yaml`/`verce
 `Procfile` exist in the repo. The Render free tier cold-starts after idle (a `503` with
 `Retry-After` on the first request, resolving on retry) — expected, not a broken deploy.
 `bootstrap.py`'s `_PERFORMANCE_STATE_FILE_SECRET` fallback exists specifically for Render's Secret
-File mechanism. The full login → chat → HITL confirm/send flow has now been exercised against
-these deployed URLs, manually (real browser, real Vercel/Render), including a real confirmed
-Slack/email send — this surfaced and fixed a real bug (see the Communication Agent's SMTP →
-Resend follow-up in `learnings.md` #6). `scripts/smoke_test_api.py` now exists to automate the
-same flow (see Commands, above) but hasn't yet been run live against the deployed URL specifically
-(only locally) as of this writing — that's the concrete next step to fully close this out. GitHub
-Actions is configured to run the offline unit suite and Ruff on pushes and pull requests;
+File mechanism. The persistent-conversation release has passed the direct Supabase integration
+check (Auth, RLS, durable storage, and logout revocation) and the complete local API smoke test
+(conversation CRUD, restored transcript, Knowledge/Database chat, and persisted HITL
+stage/cancel). The same smoke test has not yet run against the newly deployed release. Real email
+sending is also deferred until `EMAIL_FROM_ADDRESS` uses a custom domain verified in Resend;
+Resend rejects an unverified `gmail.com` sender with HTTP 403. GitHub Actions is configured to run
+the offline unit suite and Ruff on pushes and pull requests;
 Render/Vercel deployment
 still relies on each platform's git-push auto-deploy rather than committed infrastructure-as-code.
 
@@ -284,8 +283,8 @@ Real agentic tracing (`ToolCorrectnessMetric`/`TaskCompletionMetric`, which need
 other explicitly-scoped future work.
 
 **Current implementation status:** Components 0/0.5/1/3/4/5/6/7/8/9/10/11/12/13 are implemented.
-The full deployed browser flow has been exercised manually; the automated safe stage/cancel smoke
-test still needs to be run against the deployed URL. Component 11 is live-verified. Component 12
+Persistent memory is locally live-verified; the automated safe stage/cancel smoke test still needs
+to be run against the deployed URL after this release. Component 11 is live-verified. Component 12
 (parallel tool execution plus session-scoped Performance/Database tool-result caching) is covered
 by unit tests but has not had a dedicated real-integration verification pass. Component 2 remains
 a deliberate hand-rolled `asyncio` decision; reconsider LangGraph only if durable/resumable or
