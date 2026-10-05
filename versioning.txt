@@ -9,7 +9,7 @@ Version 1 (package 0.1.0):
 - Citations are shown on UI
 - Internal working is shown on UI
 
-Version 2 (package 0.2.0, current):
+Version 2 (package 0.2.0):
 - Jira and Confluence use Atlassian's Remote MCP Server preview endpoint
 - Bitbucket remains on REST because commit data is not exposed through that MCP endpoint
 - Email delivery uses Resend's HTTPS API rather than SMTP
@@ -17,3 +17,7 @@ Version 2 (package 0.2.0, current):
 - DeepEval regression harness and the 83-test offline suite are in place
 - Backend and frontend are deployed on Render and Vercel
 - GitHub Actions is configured to run unit tests and correctness-focused Ruff checks
+
+Version 3 (package 0.3.0, current):
+- Persistent memory storage applied successfully (with changes in UI)
+- Migrated deployed database to Supabase
