@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 
+from enterprise_ai.access_policy import AccessContext, Capability, ROLE_CAPABILITIES
 from enterprise_ai.core.agent import AgentResult, OnEvent
 from enterprise_ai.core.llm_client import LLMClient, ToolResponse
 from enterprise_ai.core.llm_retry import LLMUnavailableError, call_tool_with_retry
@@ -55,7 +56,7 @@ _TOOLS = [
     },
 ]
 
-def _build_system_prompt(user_display_name: str | None) -> str:
+def _build_system_prompt(user_display_name: str | None, demo_mode: bool = False) -> str:
     if user_display_name:
         signature_instruction = (
             f"The person you're sending on behalf of is {user_display_name} — if an email you "
@@ -69,8 +70,15 @@ def _build_system_prompt(user_display_name: str | None) -> str:
             "without a name (e.g. 'Thanks,' with nothing after it)."
         )
 
+    delivery_instruction = (
+        "This is a public demo. Confirmed messages are captured in a private Demo Outbox and "
+        "are never sent to real Slack or email services."
+        if demo_mode
+        else "Confirmed messages are sent through the configured Slack or email service."
+    )
+
     return f"""You are the Communication Agent of an internal company assistant. You can
-send a Slack message or an email on the user's behalf.
+prepare a Slack message or an email on the user's behalf. {delivery_instruction}
 
 The destination is fixed in advance and cannot be changed to an arbitrary address, no matter
 what the user asks. Slack always goes to the one configured channel — Slack, not email, is the
@@ -141,12 +149,23 @@ class CommunicationAgent:
         slack_client: SlackClient,
         email_client: EmailClient,
         user_display_name: str | None = None,
+        access_context: AccessContext | None = None,
+        delivery_mode: str = "real",
     ) -> None:
         self._llm_client = llm_client
         self._slack_client = slack_client
         self._email_client = email_client
-        self._system_prompt = _build_system_prompt(user_display_name)
+        if delivery_mode not in {"real", "demo"}:
+            raise ValueError(f"Unknown delivery mode: {delivery_mode}")
+        self._access_context = access_context
+        self._delivery_mode = delivery_mode
+        self._system_prompt = _build_system_prompt(user_display_name, demo_mode=delivery_mode == "demo")
         self._pending: _PendingAction | None = None
+
+    def _has_capability(self, capability: Capability) -> bool:
+        if self._access_context is None:
+            return True
+        return capability in ROLE_CAPABILITIES[self._access_context.role]
 
     async def _execute_tool(self, name: str, arguments: dict) -> object:
         if name == "send_slack_message":
@@ -178,6 +197,13 @@ class CommunicationAgent:
         on_event: OnEvent | None = None,
         tool_cache: ToolCache | None = None,
     ) -> AgentResult:
+        if not self._has_capability(Capability.COMMUNICATION_DRAFT):
+            return AgentResult(
+                agent_name="communication",
+                content="You don't have permission to draft messages.",
+                metadata={"citations": [], "access_denied": True},
+            )
+
         # on_event accepted for Agent protocol conformance but unused here — handle() only ever
         # stages a draft (an LLM decision, not a tool execution); the actual send happens later
         # in confirm_pending(), outside the traced /chat request entirely. tool_cache is likewise
@@ -226,6 +252,15 @@ class CommunicationAgent:
         if self._pending is None:
             return AgentResult(agent_name="communication", content="There's nothing pending to confirm.", metadata={"citations": []})
 
+        if self._delivery_mode == "demo" and not self._has_capability(
+            Capability.COMMUNICATION_SIMULATE_DELIVERY
+        ):
+            return AgentResult(
+                agent_name="communication",
+                content="You don't have permission to capture demo messages.",
+                metadata={"citations": [], "access_denied": True},
+            )
+
         citations: list[str] = []
         errors: list[str] = []
         for name, arguments in self._pending.tool_calls:
@@ -242,7 +277,12 @@ class CommunicationAgent:
                 content="Some actions failed and were not sent: " + "; ".join(errors),
                 metadata={"citations": citations},
             )
-        return AgentResult(agent_name="communication", content="Done — sent as confirmed.", metadata={"citations": citations})
+        content = (
+            "Demo complete — captured safely in Demo Outbox. No external message was sent."
+            if self._delivery_mode == "demo"
+            else "Done — sent as confirmed."
+        )
+        return AgentResult(agent_name="communication", content=content, metadata={"citations": citations})
 
     def cancel_pending(self) -> AgentResult:
         self._pending = None

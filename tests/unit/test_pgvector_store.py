@@ -28,3 +28,38 @@ async def test_connect_discovers_supabase_vector_schema(monkeypatch: pytest.Monk
     pooled_connection = AsyncMock()
     await init_connection(pooled_connection)
     register_vector.assert_awaited_once_with(pooled_connection, schema="extensions")
+
+
+class _AcquireContext:
+    def __init__(self, connection):
+        self.connection = connection
+
+    async def __aenter__(self):
+        return self.connection
+
+    async def __aexit__(self, exc_type, exc, traceback):
+        return False
+
+
+async def test_query_passes_access_filters_into_postgres() -> None:
+    connection = AsyncMock()
+    connection.fetch.return_value = []
+    pool = AsyncMock()
+    pool.acquire = lambda: _AcquireContext(connection)
+    store = pgvector_store.PgVectorStore(pool)
+
+    await store.query(
+        embedding=[0.1, 0.2],
+        top_k=3,
+        allowed_access_scopes=("company", "department"),
+        department="Engineering",
+        allow_all_departments=False,
+    )
+
+    query, embedding, top_k, scopes, department, all_departments = connection.fetch.await_args.args
+    assert "metadata ->> 'access_scope'" in query
+    assert embedding == [0.1, 0.2]
+    assert top_k == 3
+    assert scopes == ["company", "department"]
+    assert department == "Engineering"
+    assert all_departments is False

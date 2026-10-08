@@ -22,7 +22,15 @@ class VectorStore(Protocol):
 
     async def upsert(self, *, doc_id: str, text: str, embedding: list[float], metadata: dict) -> None: ...
 
-    async def query(self, *, embedding: list[float], top_k: int) -> list[RetrievedChunk]: ...
+    async def query(
+        self,
+        *,
+        embedding: list[float],
+        top_k: int,
+        allowed_access_scopes: tuple[str, ...] | None = None,
+        department: str | None = None,
+        allow_all_departments: bool = False,
+    ) -> list[RetrievedChunk]: ...
 
 
 class PgVectorStore:
@@ -101,17 +109,40 @@ class PgVectorStore:
                 json.dumps(metadata),
             )
 
-    async def query(self, *, embedding: list[float], top_k: int) -> list[RetrievedChunk]:
+    async def query(
+        self,
+        *,
+        embedding: list[float],
+        top_k: int,
+        allowed_access_scopes: tuple[str, ...] | None = None,
+        department: str | None = None,
+        allow_all_departments: bool = False,
+    ) -> list[RetrievedChunk]:
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
                 f"""
                 SELECT doc_id, text, metadata, 1 - (embedding <=> $1) AS similarity
                 FROM {self._table}
+                WHERE $3::text[] IS NULL
+                   OR (
+                        metadata ->> 'access_scope' = ANY($3::text[])
+                        AND (
+                            metadata ->> 'access_scope' <> 'department'
+                            OR $5::boolean
+                            OR (
+                                $4::text IS NOT NULL
+                                AND metadata -> 'departments' ? $4::text
+                            )
+                        )
+                   )
                 ORDER BY embedding <=> $1
                 LIMIT $2
                 """,
                 embedding,
                 top_k,
+                list(allowed_access_scopes) if allowed_access_scopes is not None else None,
+                department,
+                allow_all_departments,
             )
 
         return [

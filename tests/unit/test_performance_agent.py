@@ -3,6 +3,9 @@ from __future__ import annotations
 import asyncio
 import time
 
+import pytest
+
+from enterprise_ai.access_policy import AccessContext, Capability, ROLE_CAPABILITIES, Role
 from enterprise_ai.agents.performance.agent import MAX_TOOL_ITERATIONS, PerformanceAgent
 from enterprise_ai.core.llm_client import ToolCall, ToolResponse
 from enterprise_ai.core.llm_retry import LLM_CALL_MAX_ATTEMPTS
@@ -347,3 +350,33 @@ async def test_no_tool_cache_means_every_call_refetches():
     await agent.handle("what were they about?")
 
     assert jira.calls == [{"sprint_index": 1}, {"sprint_index": 1}]
+
+
+@pytest.mark.parametrize("role", [Role.EMPLOYEE, Role.EXECUTIVE])
+async def test_both_demo_roles_can_read_engineering_performance(role):
+    llm = FakeLLMClient([ToolResponse(content="Allowed engineering answer.")])
+    agent = _make_agent(llm).for_access_context(AccessContext(role, "Engineering", 4))
+
+    result = await agent.handle("How is Engineering performing?")
+
+    assert result.content == "Allowed engineering answer."
+    assert len(llm.calls) == 1
+
+
+async def test_missing_performance_capability_stops_before_atlassian_calls(monkeypatch):
+    monkeypatch.setitem(
+        ROLE_CAPABILITIES,
+        Role.EMPLOYEE,
+        ROLE_CAPABILITIES[Role.EMPLOYEE] - {Capability.PERFORMANCE_READ_ENGINEERING},
+    )
+    jira = FakeJiraClient()
+    llm = FakeLLMClient([])
+    agent = _make_agent(llm, jira=jira).for_access_context(
+        AccessContext(Role.EMPLOYEE, "Engineering", 4)
+    )
+
+    result = await agent.handle("Show performance data")
+
+    assert result.metadata["access_denied"] is True
+    assert jira.calls == []
+    assert llm.calls == []

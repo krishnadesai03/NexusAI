@@ -3,11 +3,20 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from datetime import datetime, timedelta, timezone
 
 from fastapi import Depends, Header, HTTPException, Request
 
-from api.auth_service import AuthClient, AuthenticatedUser, AuthenticationError, TokenVerifier
+from api.auth_service import (
+    DEMO_TOKEN_PREFIX,
+    AuthClient,
+    AuthenticatedUser,
+    AuthenticationError,
+    TokenVerifier,
+    hash_demo_token,
+)
 from api.conversation_store import ConversationStore
+from enterprise_ai.access_policy import get_demo_persona
 from enterprise_ai.bootstrap import SharedResources
 
 
@@ -36,6 +45,31 @@ async def get_current_session(
         raise HTTPException(status_code=401, detail="Missing or malformed Authorization header.")
 
     token = authorization.split(" ", 1)[1].strip()
+    if token.startswith(DEMO_TOKEN_PREFIX):
+        session = await store.get_and_extend_demo_session(
+            hash_demo_token(token),
+            datetime.now(timezone.utc) + timedelta(hours=24),
+        )
+        if session is None:
+            raise HTTPException(status_code=401, detail="Demo session is invalid or has expired.")
+        try:
+            persona = get_demo_persona(session.persona_slug)
+        except ValueError as exc:
+            raise HTTPException(status_code=401, detail="Demo session has an invalid persona.") from exc
+        return AuthenticatedUser(
+            id=session.id,
+            session_id=session.id,
+            email="",
+            display_name=persona.display_name,
+            employee_role=persona.role.value,
+            access_token=token,
+            persona_slug=persona.slug,
+            title=persona.title,
+            department=persona.department,
+            employee_id=persona.employee_id,
+            is_demo=True,
+        )
+
     try:
         user = await verifier.verify(token)
     except AuthenticationError as exc:

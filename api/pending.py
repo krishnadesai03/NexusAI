@@ -7,8 +7,9 @@ from fastapi import APIRouter, Depends, HTTPException
 from api.auth_service import AuthenticatedUser
 from api.conversation_store import ConversationStore, PendingAction
 from api.dependencies import get_conversation_store, get_current_session, get_shared_resources
+from api.orchestration import build_user_orchestrator
 from api.schemas import AgentResultResponse, PendingAgentRequest, PendingReviseRequest, agent_result_to_response
-from enterprise_ai.bootstrap import SharedResources, build_session_orchestrator
+from enterprise_ai.bootstrap import SharedResources
 from enterprise_ai.core.agent import AgentResult, PersistableConfirmableAgent
 
 router = APIRouter(prefix="/pending", tags=["pending"])
@@ -16,10 +17,11 @@ router = APIRouter(prefix="/pending", tags=["pending"])
 
 def _restore_agent(
     shared: SharedResources,
+    store: ConversationStore,
     user: AuthenticatedUser,
     pending: PendingAction,
 ) -> PersistableConfirmableAgent:
-    orchestrator = build_session_orchestrator(shared, user_display_name=user.display_name)
+    orchestrator = build_user_orchestrator(shared, store, user)
     if pending.agent_name not in orchestrator.agent_names():
         raise HTTPException(status_code=404, detail=f"Unknown agent: {pending.agent_name}")
     agent = orchestrator.get_agent(pending.agent_name)
@@ -49,7 +51,7 @@ async def confirm(
 ) -> AgentResultResponse:
     pending = await _claim(payload, user, store)
     try:
-        agent = _restore_agent(shared, user, pending)
+        agent = _restore_agent(shared, store, user, pending)
         response = agent_result_to_response(await agent.confirm_pending())
     except Exception:
         await store.replace_pending(pending, pending.payload)
@@ -81,7 +83,7 @@ async def revise(
 ) -> AgentResultResponse:
     pending = await _claim(payload, user, store)
     try:
-        agent = _restore_agent(shared, user, pending)
+        agent = _restore_agent(shared, store, user, pending)
         response = agent_result_to_response(await agent.revise_pending(payload.edit_instructions))
         replacement = agent.export_pending()
     except Exception:

@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import pytest
+
+from enterprise_ai.access_policy import AccessContext, Capability, ROLE_CAPABILITIES, Role
 from enterprise_ai.agents.communication.agent import CommunicationAgent
 from enterprise_ai.core.llm_client import ToolCall, ToolResponse
 from enterprise_ai.core.llm_retry import LLM_CALL_MAX_ATTEMPTS
@@ -61,11 +64,12 @@ class FakeEmailClient:
         return {"to": to, "subject": subject}
 
 
-def _make_agent(llm_client, slack_client=None, email_client=None):
+def _make_agent(llm_client, slack_client=None, email_client=None, **kwargs):
     return CommunicationAgent(
         llm_client=llm_client,
         slack_client=slack_client or FakeSlackClient(),
         email_client=email_client or FakeEmailClient(),
+        **kwargs,
     )
 
 
@@ -222,3 +226,45 @@ async def test_gives_up_with_clean_message_after_persistent_llm_failures():
 
     assert "couldn't reach the AI service" in result.content
     assert llm.attempts == LLM_CALL_MAX_ATTEMPTS
+
+
+@pytest.mark.parametrize("role", [Role.EMPLOYEE, Role.EXECUTIVE])
+async def test_demo_roles_capture_confirmation_without_real_delivery(role):
+    slack = FakeSlackClient()
+    llm = FakeLLMClient([_slack_tool_response("Safe demo message")])
+    agent = _make_agent(
+        llm,
+        slack_client=slack,
+        access_context=AccessContext(role, "Engineering", 4),
+        delivery_mode="demo",
+    )
+
+    await agent.handle("Send a demo message")
+    result = await agent.confirm_pending()
+
+    assert "Demo Outbox" in result.content
+    assert "No external message was sent" in result.content
+    # This fake acts as the Outbox adapter in this unit. API tests separately prove that the
+    # actual configured Slack client remains untouched.
+    assert slack.sent == ["Safe demo message"]
+
+
+async def test_missing_simulation_capability_stops_before_delivery(monkeypatch):
+    monkeypatch.setitem(
+        ROLE_CAPABILITIES,
+        Role.EMPLOYEE,
+        ROLE_CAPABILITIES[Role.EMPLOYEE] - {Capability.COMMUNICATION_SIMULATE_DELIVERY},
+    )
+    slack = FakeSlackClient()
+    agent = _make_agent(
+        FakeLLMClient([_slack_tool_response("Blocked")]),
+        slack_client=slack,
+        access_context=AccessContext(Role.EMPLOYEE, "Engineering", 4),
+        delivery_mode="demo",
+    )
+    await agent.handle("Send a demo message")
+
+    result = await agent.confirm_pending()
+
+    assert result.metadata["access_denied"] is True
+    assert slack.sent == []

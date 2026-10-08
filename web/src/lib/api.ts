@@ -4,6 +4,9 @@ import type {
   ChatResponse,
   ConversationDetail,
   ConversationSummary,
+  DemoDelivery,
+  DemoPersona,
+  DemoSessionResponse,
   LoginResponse,
   MeResponse,
   TraceEvent,
@@ -12,6 +15,7 @@ import type {
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 const ACCESS_TOKEN_KEY = "enterprise-ai-access-token";
 const REFRESH_TOKEN_KEY = "enterprise-ai-refresh-token";
+const DEMO_SESSIONS_KEY = "enterprise-ai-demo-sessions";
 
 export class ApiError extends Error {
   status: number;
@@ -42,6 +46,37 @@ export function setSession(session: LoginResponse): void {
 export function clearSession(): void {
   window.localStorage.removeItem(ACCESS_TOKEN_KEY);
   window.localStorage.removeItem(REFRESH_TOKEN_KEY);
+}
+
+function getSavedDemoSessions(): Record<string, string> {
+  if (typeof window === "undefined") return {};
+  try {
+    return JSON.parse(window.localStorage.getItem(DEMO_SESSIONS_KEY) ?? "{}") as Record<string, string>;
+  } catch {
+    window.localStorage.removeItem(DEMO_SESSIONS_KEY);
+    return {};
+  }
+}
+
+function saveDemoToken(personaSlug: string, token: string): void {
+  const sessions = getSavedDemoSessions();
+  sessions[personaSlug] = token;
+  window.localStorage.setItem(DEMO_SESSIONS_KEY, JSON.stringify(sessions));
+}
+
+function removeDemoToken(personaSlug: string): void {
+  const sessions = getSavedDemoSessions();
+  delete sessions[personaSlug];
+  window.localStorage.setItem(DEMO_SESSIONS_KEY, JSON.stringify(sessions));
+}
+
+function activateDemoToken(token: string): void {
+  window.localStorage.setItem(ACCESS_TOKEN_KEY, token);
+  window.localStorage.removeItem(REFRESH_TOKEN_KEY);
+}
+
+function isDemoToken(token: string | null): boolean {
+  return Boolean(token?.startsWith("demo_"));
 }
 
 let refreshInFlight: Promise<boolean> | null = null;
@@ -77,8 +112,9 @@ async function request<T>(path: string, options: RequestInit = {}, auth = true, 
   }
 
   const response = await fetch(`${API_BASE_URL}${path}`, { ...options, headers });
-  if (response.status === 401 && auth && retry && (await refreshSession())) {
-    return request<T>(path, options, auth, false);
+  if (response.status === 401 && auth && retry) {
+    if (isDemoToken(getToken())) clearSession();
+    else if (await refreshSession()) return request<T>(path, options, auth, false);
   }
   if (response.status === 204) return undefined as T;
 
@@ -97,6 +133,38 @@ export function login(email: string, password: string): Promise<LoginResponse> {
 
 export function me(): Promise<MeResponse> {
   return request<MeResponse>("/auth/me", { method: "GET" });
+}
+
+export function listDemoPersonas(): Promise<DemoPersona[]> {
+  return request<DemoPersona[]>("/demo/personas", { method: "GET" }, false);
+}
+
+export async function selectDemoPersona(personaSlug: string): Promise<DemoSessionResponse | null> {
+  const savedToken = getSavedDemoSessions()[personaSlug];
+  if (savedToken) {
+    activateDemoToken(savedToken);
+    try {
+      const profile = await me();
+      if (profile.is_demo && profile.persona_slug === personaSlug) return null;
+    } catch {
+      // Expired and invalid sessions are replaced below.
+    }
+    removeDemoToken(personaSlug);
+    clearSession();
+  }
+
+  const session = await request<DemoSessionResponse>(
+    "/demo/sessions",
+    { method: "POST", body: JSON.stringify({ persona_slug: personaSlug }) },
+    false,
+  );
+  saveDemoToken(personaSlug, session.token);
+  activateDemoToken(session.token);
+  return session;
+}
+
+export function listDemoOutbox(): Promise<DemoDelivery[]> {
+  return request<DemoDelivery[]>("/demo/outbox", { method: "GET" });
 }
 
 export function logout(): Promise<void> {
@@ -137,8 +205,9 @@ export async function streamChatMessage(
     headers,
     body: JSON.stringify({ conversation_id: conversationId, message }),
   });
-  if (response.status === 401 && retry && (await refreshSession())) {
-    return streamChatMessage(conversationId, message, onEvent, false);
+  if (response.status === 401 && retry) {
+    if (isDemoToken(getToken())) clearSession();
+    else if (await refreshSession()) return streamChatMessage(conversationId, message, onEvent, false);
   }
   if (!response.ok) {
     const body = await response.json();

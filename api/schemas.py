@@ -33,6 +33,41 @@ class MeResponse(BaseModel):
     email: str
     display_name: str
     employee_role: str
+    persona_slug: str | None = None
+    title: str | None = None
+    department: str | None = None
+    employee_id: int | None = None
+    is_demo: bool = False
+
+
+class DemoPersonaResponse(BaseModel):
+    slug: str
+    display_name: str
+    title: str
+    role: str
+    department: str | None
+
+
+class DemoSessionCreateRequest(BaseModel):
+    persona_slug: str
+
+
+class DemoSessionResponse(BaseModel):
+    token: str
+    expires_at: datetime
+    persona: DemoPersonaResponse
+
+
+class DemoDeliveryResponse(BaseModel):
+    id: UUID
+    persona_slug: str
+    channel: str
+    recipient: str
+    subject: str | None
+    content: str
+    status: str
+    created_at: datetime
+    expires_at: datetime
 
 
 class ChatRequest(BaseModel):

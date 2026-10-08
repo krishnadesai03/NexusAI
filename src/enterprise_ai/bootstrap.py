@@ -31,6 +31,7 @@ from enterprise_ai.agents.communication.agent import CommunicationAgent
 from enterprise_ai.agents.database.agent import DatabaseAgent
 from enterprise_ai.agents.knowledge.agent import KnowledgeAgent
 from enterprise_ai.agents.performance.agent import PerformanceAgent
+from enterprise_ai.access_policy import AccessContext, Role
 from enterprise_ai.core.agent import Agent, AgentResult, OnEvent
 from enterprise_ai.core.embedding_client import default_embedding_client
 from enterprise_ai.core.llm_client import LLMClient, default_llm_client
@@ -40,6 +41,7 @@ from enterprise_ai.integrations.atlassian.mcp_client import AtlassianMCPSession,
 from enterprise_ai.integrations.communication.email_client import EmailClient
 from enterprise_ai.integrations.communication.slack_client import SlackClient
 from enterprise_ai.integrations.sql_db.postgres_client import PostgresQueryClient
+from enterprise_ai.integrations.sql_db.role_credentials import employee_readonly_dsn
 from enterprise_ai.integrations.vector_store.pgvector_store import PgVectorStore
 from enterprise_ai.orchestrator.memory import ConversationMemory
 from enterprise_ai.orchestrator.orchestrator import Orchestrator
@@ -155,6 +157,8 @@ class SharedResources:
     llm_client: LLMClient
     communication_clients: tuple[LLMClient, SlackClient, EmailClient] | None
     atlassian_mcp_session: AtlassianMCPSession | None
+    employee_database_agent: Agent | None = None
+    employee_db_query_client: PostgresQueryClient | None = None
 
 
 async def build_shared_resources() -> SharedResources:
@@ -216,6 +220,7 @@ async def build_shared_resources() -> SharedResources:
             llm_client=llm_client,
             db_client=db_query_client,
             schema_description=schema_description,
+            data_role=Role.EXECUTIVE,
         )
         logger.info("Database agent initialized")
     except Exception as exc:
@@ -224,6 +229,34 @@ async def build_shared_resources() -> SharedResources:
         if db_query_client:
             await db_query_client.close()
         db_query_client = None
+
+    employee_db_query_client: PostgresQueryClient | None = None
+    employee_database_agent: Agent | None = None
+    try:
+        employee_dsn = employee_readonly_dsn(
+            os.environ["DATABASE_READONLY_URL"],
+            os.environ["DATABASE_READONLY_PASSWORD"],
+        )
+        async with asyncio.timeout(_STARTUP_DEPENDENCY_TIMEOUT_SECONDS):
+            employee_db_query_client = await PostgresQueryClient.connect(
+                dsn=employee_dsn,
+                schema="company_employee",
+            )
+            employee_schema = await employee_db_query_client.get_schema_description()
+        if not employee_schema:
+            raise RuntimeError("company_employee schema is empty")
+        employee_database_agent = DatabaseAgent(
+            llm_client=llm_client,
+            db_client=employee_db_query_client,
+            schema_description=employee_schema,
+            data_role=Role.EMPLOYEE,
+        )
+        logger.info("Employee database agent initialized")
+    except Exception as exc:
+        logger.warning("Employee database agent unavailable during startup: %s", type(exc).__name__)
+        if employee_db_query_client:
+            await employee_db_query_client.close()
+        employee_db_query_client = None
 
     communication_clients: tuple[LLMClient, SlackClient, EmailClient] | None
     try:
@@ -241,6 +274,8 @@ async def build_shared_resources() -> SharedResources:
         llm_client=llm_client,
         communication_clients=communication_clients,
         atlassian_mcp_session=atlassian_mcp_session,
+        employee_database_agent=employee_database_agent,
+        employee_db_query_client=employee_db_query_client,
     )
 
 
@@ -248,6 +283,8 @@ def build_session_orchestrator(
     shared: SharedResources,
     user_display_name: str | None = None,
     memory: ConversationMemory | None = None,
+    access_context: AccessContext | None = None,
+    communication_clients_override: tuple[LLMClient, object, object] | None = None,
 ) -> Orchestrator:
     """Cheap, no I/O — safe to call once per login. Every agent except communication is shared
     directly from `shared`; communication gets a fresh instance so `self._pending` (the staged
@@ -258,21 +295,38 @@ def build_session_orchestrator(
     "[Your Name]" — optional since callers without a real login session (scripts/chat.py) have no
     name to provide."""
 
-    if shared.communication_clients is not None:
-        comm_llm, slack_client, email_client = shared.communication_clients
+    communication_clients = communication_clients_override or shared.communication_clients
+    if communication_clients is not None:
+        comm_llm, slack_client, email_client = communication_clients
         communication_agent: Agent = CommunicationAgent(
             llm_client=comm_llm,
             slack_client=slack_client,
             email_client=email_client,
             user_display_name=user_display_name,
+            access_context=access_context,
+            delivery_mode="demo" if communication_clients_override is not None else "real",
         )
     else:
         communication_agent = _UnseededCommunicationAgent()
 
+    knowledge_agent: Agent = shared.knowledge_agent
+    if access_context is not None and isinstance(knowledge_agent, KnowledgeAgent):
+        knowledge_agent = knowledge_agent.for_access_context(access_context)
+
+    performance_agent: Agent = shared.performance_agent
+    if access_context is not None and isinstance(performance_agent, PerformanceAgent):
+        performance_agent = performance_agent.for_access_context(access_context)
+
+    database_agent: Agent = shared.database_agent
+    if access_context is not None and access_context.role is Role.EMPLOYEE:
+        database_agent = shared.employee_database_agent or _UnseededDatabaseAgent()
+    if access_context is not None and isinstance(database_agent, DatabaseAgent):
+        database_agent = database_agent.for_access_context(access_context)
+
     agents = {
-        "knowledge": shared.knowledge_agent,
-        "performance": shared.performance_agent,
-        "database": shared.database_agent,
+        "knowledge": knowledge_agent,
+        "performance": performance_agent,
+        "database": database_agent,
         "communication": communication_agent,
     }
 
@@ -289,6 +343,8 @@ async def close_shared_resources(shared: SharedResources) -> None:
         await shared.vector_store.close()
     if shared.db_query_client:
         await shared.db_query_client.close()
+    if shared.employee_db_query_client:
+        await shared.employee_db_query_client.close()
     if shared.atlassian_mcp_session:
         await shared.atlassian_mcp_session.close()
 

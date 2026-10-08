@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import os
+import secrets
 from dataclasses import dataclass
 from typing import Protocol
 from uuid import UUID
@@ -18,6 +20,11 @@ class AuthenticatedUser:
     display_name: str
     employee_role: str
     access_token: str
+    persona_slug: str | None = None
+    title: str | None = None
+    department: str | None = None
+    employee_id: int | None = None
+    is_demo: bool = False
 
 
 @dataclass(frozen=True)
@@ -30,6 +37,18 @@ class AuthTokens:
 
 class AuthenticationError(ValueError):
     pass
+
+
+DEMO_TOKEN_PREFIX = "demo_"
+
+
+def generate_demo_token() -> str:
+    """Return the opaque bearer token once; only its SHA-256 digest is persisted."""
+    return f"{DEMO_TOKEN_PREFIX}{secrets.token_urlsafe(32)}"
+
+
+def hash_demo_token(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
 class TokenVerifier(Protocol):

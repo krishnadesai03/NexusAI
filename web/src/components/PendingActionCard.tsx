@@ -47,7 +47,7 @@ export function PendingActionCard({
       ) : (
         <div className="pending-actions">
           <button className="send-button" onClick={onConfirm} disabled={busy}>
-            Send it
+            Capture in Demo Outbox
           </button>
           <button onClick={() => setEditing(true)} disabled={busy}>
             Edit

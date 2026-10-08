@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from enterprise_ai.access_policy import AccessContext, Capability, ROLE_CAPABILITIES
 from enterprise_ai.agents.knowledge.schemas import KnowledgeAnswer
 from enterprise_ai.core.agent import AgentResult, OnEvent, emit_event
 from enterprise_ai.core.embedding_client import EmbeddingClient
@@ -47,12 +48,47 @@ class KnowledgeAgent:
         *,
         top_k: int = 3,
         retrieval_floor: float = 0.2,
+        access_context: AccessContext | None = None,
     ) -> None:
         self._embedding_client = embedding_client
         self._vector_store = vector_store
         self._llm_client = llm_client
         self._top_k = top_k
         self._retrieval_floor = retrieval_floor
+        self._access_context = access_context
+
+    def for_access_context(self, access_context: AccessContext) -> KnowledgeAgent:
+        """Create a cheap per-session view that shares all clients but carries access policy."""
+        return KnowledgeAgent(
+            embedding_client=self._embedding_client,
+            vector_store=self._vector_store,
+            llm_client=self._llm_client,
+            top_k=self._top_k,
+            retrieval_floor=self._retrieval_floor,
+            access_context=access_context,
+        )
+
+    def _retrieval_access(self) -> tuple[tuple[str, ...] | None, str | None, bool]:
+        if self._access_context is None:
+            return None, None, False
+
+        capabilities = ROLE_CAPABILITIES[self._access_context.role]
+        scopes: list[str] = []
+        if Capability.KNOWLEDGE_READ_COMPANY in capabilities:
+            scopes.append("company")
+        if (
+            Capability.KNOWLEDGE_READ_OWN_DEPARTMENT in capabilities
+            or Capability.KNOWLEDGE_READ_ALL_DEPARTMENTS in capabilities
+        ):
+            scopes.append("department")
+        if Capability.KNOWLEDGE_READ_EXECUTIVE in capabilities:
+            scopes.append("executive")
+
+        return (
+            tuple(scopes),
+            self._access_context.department,
+            Capability.KNOWLEDGE_READ_ALL_DEPARTMENTS in capabilities,
+        )
 
     async def handle(
         self,
@@ -68,7 +104,14 @@ class KnowledgeAgent:
         emit_event(on_event, {"type": "tool_result", "agent": "knowledge", "tool": "embed_query"})
 
         emit_event(on_event, {"type": "tool_called", "agent": "knowledge", "tool": "search_documents"})
-        chunks = await self._vector_store.query(embedding=query_embedding, top_k=self._top_k)
+        allowed_scopes, department, allow_all_departments = self._retrieval_access()
+        chunks = await self._vector_store.query(
+            embedding=query_embedding,
+            top_k=self._top_k,
+            allowed_access_scopes=allowed_scopes,
+            department=department,
+            allow_all_departments=allow_all_departments,
+        )
         emit_event(
             on_event,
             {"type": "tool_result", "agent": "knowledge", "tool": "search_documents", "detail": f"{len(chunks)} chunk(s) found"},

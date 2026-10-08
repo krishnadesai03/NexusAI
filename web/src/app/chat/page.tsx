@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
   ApiError,
@@ -12,13 +13,12 @@ import {
   getConversation,
   getToken,
   listConversations,
-  logout as apiLogout,
   me,
   revisePending,
   streamChatMessage,
 } from "@/lib/api";
 import { applyTraceEvent, emptyTrace, type Trace } from "@/lib/trace";
-import type { AgentResultResponse, ChatTurn, ConversationSummary } from "@/lib/types";
+import type { AgentResultResponse, ChatTurn, ConversationSummary, MeResponse } from "@/lib/types";
 import { AgentReply } from "@/components/AgentReply";
 import { ChatInput } from "@/components/ChatInput";
 import { PendingActionCard } from "@/components/PendingActionCard";
@@ -31,7 +31,7 @@ interface PendingRef {
 
 export default function ChatPage() {
   const router = useRouter();
-  const [displayName, setDisplayName] = useState<string | null>(null);
+  const [profile, setProfile] = useState<MeResponse | null>(null);
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
   const [turns, setTurns] = useState<ChatTurn[]>([]);
@@ -47,14 +47,14 @@ export default function ChatPage() {
 
   useEffect(() => {
     if (!getToken()) {
-      router.replace("/login");
+      router.replace("/");
       return;
     }
 
     async function initialize() {
       try {
         const user = await me();
-        setDisplayName(user.display_name);
+        setProfile(user);
         let items = await listConversations();
         if (items.length === 0) items = [await createConversation()];
         setConversations(items);
@@ -120,14 +120,9 @@ export default function ChatPage() {
     );
   }
 
-  async function handleLogout() {
-    try {
-      await apiLogout();
-    } catch {
-      // Clearing the local tokens still signs this browser out if the remote session already expired.
-    }
+  function handleSwitchProfile() {
     clearSession();
-    router.replace("/login");
+    router.push("/");
   }
 
   async function handleSend(message: string) {
@@ -200,7 +195,7 @@ export default function ChatPage() {
   function handleApiError(err: unknown) {
     if (err instanceof ApiError && err.status === 401) {
       clearSession();
-      router.replace("/login");
+      router.replace("/");
       return;
     }
     setError(err instanceof ApiError ? err.message : "Something went wrong reaching the server. Please try again.");
@@ -242,7 +237,14 @@ export default function ChatPage() {
       <div className="chat-main">
         <header className="chat-header">
           <div className="brand"><span className="brand-logo">N</span><h1>Nexus AI</h1></div>
-          <div className="header-center">{displayName && <span>{displayName}</span>}</div>
+          <div className="header-center">
+            {profile && (
+              <div className="active-profile">
+                <span className="active-profile-name">{profile.display_name}</span>
+                <span className="active-profile-role">{profile.title ?? profile.employee_role}</span>
+              </div>
+            )}
+          </div>
           <div className="header-right">
             <label className="toggle-label">
               <input type="checkbox" checked={working} onChange={(event) => setWorking(event.target.checked)} />
@@ -256,10 +258,14 @@ export default function ChatPage() {
               />
               Show citations
             </label>
-            <button className="text-button" onClick={handleLogout}>Logout</button>
+            <Link className="text-link" href="/outbox">Demo Outbox</Link>
+            <button className="text-button" onClick={handleSwitchProfile}>Switch profile</button>
           </div>
         </header>
 
+        <div className="demo-banner">
+          <span>Demo mode</span> Communications are captured safely in Demo Outbox. Inactive history expires after 24 hours.
+        </div>
         <div className="chat-body">
           <div className="chat-scroll-inner">
             {!loading && turns.length === 0 && <p className="empty-state">Ask a question to get started.</p>}

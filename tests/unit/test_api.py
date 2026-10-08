@@ -8,8 +8,15 @@ from uuid import UUID, uuid4
 import pytest
 from fastapi.testclient import TestClient
 
-from api.auth_service import AuthenticatedUser, AuthenticationError, AuthTokens
-from api.conversation_store import Conversation, ConversationNotFoundError, PendingAction, StoredTurn
+from api.auth_service import AuthenticatedUser, AuthenticationError, AuthTokens, hash_demo_token
+from api.conversation_store import (
+    Conversation,
+    ConversationNotFoundError,
+    DemoDelivery,
+    DemoSession,
+    PendingAction,
+    StoredTurn,
+)
 from api.dependencies import (
     get_auth_client,
     get_conversation_store,
@@ -17,6 +24,7 @@ from api.dependencies import (
     get_shared_resources,
     get_token_verifier,
 )
+from api.demo_outbox import DemoEmailClient
 from api.main import app
 from enterprise_ai.bootstrap import SharedResources
 from enterprise_ai.core.agent import AgentResult
@@ -68,7 +76,58 @@ class FakeConversationStore:
         self.conversations: dict[UUID, Conversation] = {}
         self.turns: dict[UUID, list[StoredTurn]] = {}
         self.pending: dict[UUID, PendingAction] = {}
+        self.demo_sessions: dict[str, DemoSession] = {}
+        self.demo_deliveries: dict[UUID, DemoDelivery] = {}
         self.next_turn_id = 1
+
+    async def create_demo_session(
+        self, token_hash: str, persona_slug: str, expires_at: datetime
+    ) -> DemoSession:
+        session = DemoSession(uuid4(), persona_slug, NOW, NOW, expires_at)
+        self.demo_sessions[token_hash] = session
+        return session
+
+    async def get_and_extend_demo_session(
+        self, token_hash: str, expires_at: datetime
+    ) -> DemoSession | None:
+        session = self.demo_sessions.get(token_hash)
+        if session is None or session.expires_at <= datetime.now(timezone.utc):
+            return None
+        extended = replace(session, last_seen_at=datetime.now(timezone.utc), expires_at=expires_at)
+        self.demo_sessions[token_hash] = extended
+        return extended
+
+    async def create_demo_delivery(
+        self,
+        demo_session_id: UUID,
+        persona_slug: str,
+        channel: str,
+        recipient: str,
+        subject: str | None,
+        content: str,
+    ) -> DemoDelivery:
+        delivery = DemoDelivery(
+            uuid4(),
+            demo_session_id,
+            persona_slug,
+            channel,
+            recipient,
+            subject,
+            content,
+            "captured",
+            NOW,
+            NOW + timedelta(days=1),
+        )
+        self.demo_deliveries[delivery.id] = delivery
+        return delivery
+
+    async def list_demo_deliveries(self, demo_session_id: UUID) -> list[DemoDelivery]:
+        return [
+            delivery
+            for delivery in self.demo_deliveries.values()
+            if delivery.demo_session_id == demo_session_id
+            and delivery.expires_at > datetime.now(timezone.utc)
+        ]
 
     async def is_auth_session_active(self, session_id: UUID) -> bool:
         return session_id == SESSION_ID
@@ -273,6 +332,73 @@ def test_logout_revokes_supabase_session():
     assert auth.logged_out == ["access"]
 
 
+def test_demo_personas_are_publicly_discoverable():
+    response = client.get("/demo/personas")
+    assert response.status_code == 200
+    assert [persona["slug"] for persona in response.json()] == ["sofia-reyes", "matt-davidson"]
+
+
+def test_demo_session_uses_hashed_token_and_restores_persona():
+    store = FakeConversationStore()
+    app.dependency_overrides[get_conversation_store] = lambda: store
+    app.dependency_overrides[get_token_verifier] = FakeVerifier
+
+    created = client.post("/demo/sessions", json={"persona_slug": "sofia-reyes"})
+    assert created.status_code == 201
+    token = created.json()["token"]
+    assert token.startswith("demo_")
+    assert token not in store.demo_sessions
+    assert hash_demo_token(token) in store.demo_sessions
+
+    headers = {"Authorization": f"Bearer {token}"}
+    first = client.get("/auth/me", headers=headers)
+    second = client.get("/auth/me", headers=headers)
+    assert first.status_code == second.status_code == 200
+    assert first.json()["user_id"] == second.json()["user_id"]
+    assert first.json()["persona_slug"] == "sofia-reyes"
+    assert first.json()["department"] == "Engineering"
+    assert first.json()["employee_id"] == 4
+    assert first.json()["is_demo"] is True
+
+
+def test_demo_sessions_isolate_conversations_between_visitors():
+    store = FakeConversationStore()
+    app.dependency_overrides[get_conversation_store] = lambda: store
+    app.dependency_overrides[get_token_verifier] = FakeVerifier
+
+    sofia_token = client.post("/demo/sessions", json={"persona_slug": "sofia-reyes"}).json()["token"]
+    matt_token = client.post("/demo/sessions", json={"persona_slug": "matt-davidson"}).json()["token"]
+    sofia_headers = {"Authorization": f"Bearer {sofia_token}"}
+    matt_headers = {"Authorization": f"Bearer {matt_token}"}
+
+    assert client.post("/conversations", json={"title": "Sofia private"}, headers=sofia_headers).status_code == 201
+    assert client.post("/conversations", json={"title": "Matt private"}, headers=matt_headers).status_code == 201
+
+    assert [item["title"] for item in client.get("/conversations", headers=sofia_headers).json()] == ["Sofia private"]
+    assert [item["title"] for item in client.get("/conversations", headers=matt_headers).json()] == ["Matt private"]
+
+
+def test_expired_demo_session_is_rejected():
+    store = FakeConversationStore()
+    app.dependency_overrides[get_conversation_store] = lambda: store
+    app.dependency_overrides[get_token_verifier] = FakeVerifier
+    token = client.post("/demo/sessions", json={"persona_slug": "sofia-reyes"}).json()["token"]
+    token_hash = hash_demo_token(token)
+    store.demo_sessions[token_hash] = replace(
+        store.demo_sessions[token_hash], expires_at=datetime.now(timezone.utc) - timedelta(seconds=1)
+    )
+
+    response = client.get("/auth/me", headers={"Authorization": f"Bearer {token}"})
+    assert response.status_code == 401
+
+
+def test_unknown_demo_persona_is_rejected():
+    store = FakeConversationStore()
+    app.dependency_overrides[get_conversation_store] = lambda: store
+    response = client.post("/demo/sessions", json={"persona_slug": "unknown"})
+    assert response.status_code == 404
+
+
 def test_conversations_are_created_listed_loaded_and_deleted():
     store = FakeConversationStore()
     _authenticated(store)
@@ -359,6 +485,73 @@ def test_pending_action_survives_fresh_orchestrators_and_confirms_once():
     assert confirmed.status_code == 200
     assert confirmed.json()["requires_confirmation"] is False
     assert duplicate.status_code == 409
+
+
+def test_demo_confirmation_captures_outbox_without_calling_real_slack():
+    store = FakeConversationStore()
+    shared = _shared(["communication"], communication=True)
+    app.dependency_overrides[get_conversation_store] = lambda: store
+    app.dependency_overrides[get_shared_resources] = lambda: shared
+    app.dependency_overrides[get_token_verifier] = FakeVerifier
+
+    token = client.post("/demo/sessions", json={"persona_slug": "sofia-reyes"}).json()["token"]
+    headers = {"Authorization": f"Bearer {token}"}
+    conversation = client.post("/conversations", json={}, headers=headers).json()
+    request = {"conversation_id": conversation["id"], "message": "Send a Slack message"}
+    staged = _parse_sse_events(client.post("/chat", json=request, headers=headers).text)[-1]["result"]
+    assert staged["results"]["communication"]["requires_confirmation"] is True
+
+    action = {"conversation_id": conversation["id"], "agent": "communication"}
+    confirmed = client.post("/pending/confirm", json=action, headers=headers)
+    assert confirmed.status_code == 200
+    assert "Demo Outbox" in confirmed.json()["content"]
+    assert "No external message was sent" in confirmed.json()["content"]
+
+    real_slack = shared.communication_clients[1]
+    assert real_slack.sent == []
+    outbox = client.get("/demo/outbox", headers=headers)
+    assert outbox.status_code == 200
+    assert len(outbox.json()) == 1
+    assert outbox.json()[0]["channel"] == "slack"
+    assert outbox.json()[0]["status"] == "captured"
+
+
+async def test_demo_outbox_is_isolated_between_sessions():
+    store = FakeConversationStore()
+    app.dependency_overrides[get_conversation_store] = lambda: store
+    app.dependency_overrides[get_token_verifier] = FakeVerifier
+    sofia_token = client.post("/demo/sessions", json={"persona_slug": "sofia-reyes"}).json()["token"]
+    matt_token = client.post("/demo/sessions", json={"persona_slug": "matt-davidson"}).json()["token"]
+    sofia_session = store.demo_sessions[hash_demo_token(sofia_token)]
+    await store.create_demo_delivery(
+        sofia_session.id,
+        "sofia-reyes",
+        "email",
+        "Priya Nair",
+        "Hello",
+        "Private demo message",
+    )
+
+    sofia = client.get("/demo/outbox", headers={"Authorization": f"Bearer {sofia_token}"})
+    matt = client.get("/demo/outbox", headers={"Authorization": f"Bearer {matt_token}"})
+    assert len(sofia.json()) == 1
+    assert matt.json() == []
+
+
+async def test_demo_email_client_captures_subject_body_and_friendly_recipient():
+    store = FakeConversationStore()
+    session_id = uuid4()
+    email = DemoEmailClient(store, session_id, "matt-davidson")
+
+    result = await email.send_email("Quarterly update", "Revenue is on plan.", "priyanair")
+
+    delivery = next(iter(store.demo_deliveries.values()))
+    assert result["simulated"] is True
+    assert delivery.demo_session_id == session_id
+    assert delivery.channel == "email"
+    assert delivery.recipient == "Priya Nair"
+    assert delivery.subject == "Quarterly update"
+    assert delivery.content == "Revenue is on plan."
 
 
 def test_chat_blocks_a_second_message_while_action_is_pending():

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 
+from enterprise_ai.access_policy import AccessContext, Capability, ROLE_CAPABILITIES, Role
 from enterprise_ai.core.agent import AgentResult, OnEvent, emit_event
 from enterprise_ai.core.llm_client import LLMClient
 from enterprise_ai.core.llm_retry import LLMUnavailableError, call_tool_with_retry
@@ -30,7 +31,20 @@ _TOOLS = [
 ]
 
 
-def _build_system_prompt(schema_description: str) -> str:
+def _build_system_prompt(schema_description: str, access_context: AccessContext | None = None) -> str:
+    access_instructions = ""
+    if access_context is not None and access_context.role is Role.EMPLOYEE:
+        access_instructions = f"""
+
+You are operating through employee-safe database views for employee ID
+{access_context.employee_id}. The current employee is in {access_context.department}. Use
+company_employee.own_employee_profile for their private salary and hire-date information. Other
+employees are visible only through the safe directory columns shown in the schema. Do not attempt
+to query company_data or tables and columns absent from the schema. If requested information is
+unavailable, clearly explain that the employee does not have access to it."""
+    elif access_context is not None and access_context.role is Role.EXECUTIVE:
+        access_instructions = "\n\nThe current user has executive read access to the company_data schema."
+
     return f"""You are the Database Agent of an internal company assistant. Answer questions
 about company data (employees, departments, customers, deals, subscriptions, expenses,
 budgets, support tickets) by writing and running real SQL queries — never guess an answer
@@ -46,6 +60,7 @@ values are listed below, use that exact spelling and capitalization in filters �
 at how a value might be written (e.g. "active" vs "Active"), since a wrong guess silently
 returns zero rows instead of an error, which looks like "no data" rather than a wrong query:
 {schema_description}
+{access_instructions}
 
 If a query fails (wrong column name, syntax error, etc.), read the actual error message and
 try again with a corrected query — do not give up or guess after one failure. Likewise, if a
@@ -60,19 +75,56 @@ call further tools once you're ready to answer."""
 
 class DatabaseAgent:
     """Answers questions about structured company data (learnings.md #5) by having the LLM
-    write real SQL against a read-only Postgres connection. Deliberately no permission system
-    beyond read-only vs. write — this project is about demonstrating the agent's own reasoning
-    (picking the right tables/columns among many), not building role-based access control,
-    which is a distinct, out-of-scope concern (noted explicitly, not an oversight).
+    write real SQL against a role-specific read-only Postgres connection. Employee sessions see
+    only curated safe views; executive sessions use the broader company schema.
 
     Uses the same tool-calling loop pattern as PerformanceAgent, with a single tool
     (run_sql_query) instead of several — SQL's own flexibility means one tool is enough,
     unlike Jira/Confluence/Bitbucket needing separate, structured lookups."""
 
-    def __init__(self, llm_client: LLMClient, db_client: PostgresQueryClient, schema_description: str) -> None:
+    def __init__(
+        self,
+        llm_client: LLMClient,
+        db_client: PostgresQueryClient,
+        schema_description: str,
+        *,
+        data_role: Role | None = None,
+        access_context: AccessContext | None = None,
+    ) -> None:
         self._llm_client = llm_client
         self._db_client = db_client
         self._schema_description = schema_description
+        self._data_role = data_role
+        self._access_context = access_context
+
+    def for_access_context(self, access_context: AccessContext) -> DatabaseAgent:
+        return DatabaseAgent(
+            llm_client=self._llm_client,
+            db_client=self._db_client,
+            schema_description=self._schema_description,
+            data_role=self._data_role,
+            access_context=access_context,
+        )
+
+    def _access_allowed(self) -> bool:
+        if self._access_context is None or self._data_role is None:
+            return True
+        if self._access_context.role is not self._data_role:
+            return False
+        capabilities = ROLE_CAPABILITIES[self._access_context.role]
+        required = {
+            Role.EMPLOYEE: {
+                Capability.DATABASE_READ_DIRECTORY,
+                Capability.DATABASE_READ_SELF,
+                Capability.DATABASE_READ_SUPPORT_OPERATIONS,
+            },
+            Role.EXECUTIVE: {
+                Capability.DATABASE_READ_ALL_EMPLOYEES,
+                Capability.DATABASE_READ_COMPANY_FINANCIALS,
+                Capability.DATABASE_READ_COMPANY_OPERATIONS,
+            },
+        }[self._data_role]
+        return required.issubset(capabilities)
 
     async def handle(
         self,
@@ -81,8 +133,18 @@ class DatabaseAgent:
         on_event: OnEvent | None = None,
         tool_cache: ToolCache | None = None,
     ) -> AgentResult:
+        if not self._access_allowed():
+            return AgentResult(
+                agent_name="database",
+                content="You don't have permission to access the requested company database.",
+                metadata={"citations": [], "access_denied": True},
+            )
+
         messages = [
-            {"role": "system", "content": _build_system_prompt(self._schema_description)},
+            {
+                "role": "system",
+                "content": _build_system_prompt(self._schema_description, self._access_context),
+            },
             *(history or []),
             {"role": "user", "content": user_request},
         ]

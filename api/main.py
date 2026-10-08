@@ -25,6 +25,8 @@ from api.auth_service import SupabaseAuthClient, SupabaseTokenVerifier
 from api.chat import router as chat_router
 from api.conversation_store import PostgresConversationStore
 from api.conversations import router as conversations_router
+from api.demo import router as demo_router
+from api.demo_outbox import router as demo_outbox_router
 from api.pending import router as pending_router
 from enterprise_ai.bootstrap import build_shared_resources, close_shared_resources
 
@@ -79,6 +81,8 @@ async def http_exception_handler(request: Request, exc: HTTPException) -> JSONRe
 
 
 app.include_router(auth_router)
+app.include_router(demo_router)
+app.include_router(demo_outbox_router)
 app.include_router(conversations_router)
 app.include_router(chat_router)
 app.include_router(pending_router)

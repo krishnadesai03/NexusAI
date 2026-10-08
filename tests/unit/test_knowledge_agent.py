@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from enterprise_ai.access_policy import AccessContext, Role
 from enterprise_ai.agents.knowledge.agent import KnowledgeAgent
 from enterprise_ai.agents.knowledge.schemas import KnowledgeAnswer
 from enterprise_ai.integrations.vector_store.pgvector_store import RetrievedChunk
@@ -17,9 +18,19 @@ class FakeVectorStore:
     def __init__(self, chunks: list[RetrievedChunk]):
         self._chunks = chunks
         self.last_top_k: int | None = None
+        self.last_access: tuple[tuple[str, ...] | None, str | None, bool] | None = None
 
-    async def query(self, *, embedding, top_k):
+    async def query(
+        self,
+        *,
+        embedding,
+        top_k,
+        allowed_access_scopes=None,
+        department=None,
+        allow_all_departments=False,
+    ):
         self.last_top_k = top_k
+        self.last_access = (allowed_access_scopes, department, allow_all_departments)
         return self._chunks[:top_k]
 
     async def upsert(self, **kwargs):
@@ -177,3 +188,35 @@ async def test_no_generate_event_when_retrieval_floor_not_cleared():
 
     tools_called = [e["tool"] for e in events if e["type"] == "tool_called"]
     assert tools_called == ["embed_query", "search_documents"]  # never reaches generate_answer
+
+
+async def test_employee_retrieval_is_limited_to_company_and_own_department():
+    chunks = [RetrievedChunk(doc_id="doc.md::0", text="allowed", metadata={}, similarity=0.9)]
+    vector_store = FakeVectorStore(chunks)
+    answer = KnowledgeAnswer(answer="allowed", citations=["doc.md::0"], answer_found=True)
+    agent = KnowledgeAgent(
+        embedding_client=FakeEmbeddingClient(),
+        vector_store=vector_store,
+        llm_client=FakeLLMClient(answer),
+        access_context=AccessContext(Role.EMPLOYEE, "Engineering", 4),
+    )
+
+    await agent.handle("Question")
+
+    assert vector_store.last_access == (("company", "department"), "Engineering", False)
+
+
+async def test_executive_retrieval_includes_every_labeled_scope_and_department():
+    chunks = [RetrievedChunk(doc_id="doc.md::0", text="allowed", metadata={}, similarity=0.9)]
+    vector_store = FakeVectorStore(chunks)
+    answer = KnowledgeAnswer(answer="allowed", citations=["doc.md::0"], answer_found=True)
+    agent = KnowledgeAgent(
+        embedding_client=FakeEmbeddingClient(),
+        vector_store=vector_store,
+        llm_client=FakeLLMClient(answer),
+        access_context=AccessContext(Role.EXECUTIVE, "Executive Office", 46),
+    )
+
+    await agent.handle("Question")
+
+    assert vector_store.last_access == (("company", "department", "executive"), "Executive Office", True)

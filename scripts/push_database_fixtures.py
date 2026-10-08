@@ -23,8 +23,13 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from seed_database_data import generate_all  # noqa: E402
+from enterprise_ai.integrations.sql_db.role_credentials import (  # noqa: E402
+    EMPLOYEE_READONLY_ROLE,
+    EXECUTIVE_READONLY_ROLE,
+    derive_employee_password,
+)
 
-READONLY_ROLE = "enterprise_ai_readonly"
+READONLY_ROLE = EXECUTIVE_READONLY_ROLE
 
 SCHEMA_DDL = """
 CREATE SCHEMA IF NOT EXISTS company_data;
@@ -99,6 +104,31 @@ CREATE TABLE IF NOT EXISTS company_data.support_tickets (
 );
 """
 
+EMPLOYEE_VIEWS_DDL = """
+CREATE SCHEMA IF NOT EXISTS company_employee;
+
+CREATE OR REPLACE VIEW company_employee.departments
+WITH (security_barrier = true) AS
+SELECT id, name, head_employee_id
+FROM company_data.departments;
+
+CREATE OR REPLACE VIEW company_employee.employees
+WITH (security_barrier = true) AS
+SELECT id, name, department_id, role, manager_id
+FROM company_data.employees;
+
+CREATE OR REPLACE VIEW company_employee.own_employee_profile
+WITH (security_barrier = true) AS
+SELECT id, name, department_id, role, salary, hire_date, manager_id
+FROM company_data.employees
+WHERE id = 4;
+
+CREATE OR REPLACE VIEW company_employee.support_tickets
+WITH (security_barrier = true) AS
+SELECT id, priority, status, created_date, resolved_date, assigned_employee_id
+FROM company_data.support_tickets;
+"""
+
 
 def _load_dotenv(path: Path) -> None:
     if not path.exists():
@@ -111,20 +141,33 @@ def _load_dotenv(path: Path) -> None:
         os.environ.setdefault(key.strip(), value.strip())
 
 
-async def _ensure_readonly_role(conn: asyncpg.Connection, password: str) -> None:
+async def _ensure_login_role(conn: asyncpg.Connection, role: str, password: str) -> None:
     # PostgreSQL does not accept a bind parameter in CREATE/ALTER ROLE's PASSWORD clause.
     # Ask PostgreSQL itself to quote the value before interpolating it into the DDL.
     quoted_password = await conn.fetchval("SELECT quote_literal($1)", password)
-    exists = await conn.fetchval("SELECT 1 FROM pg_roles WHERE rolname = $1", READONLY_ROLE)
+    exists = await conn.fetchval("SELECT 1 FROM pg_roles WHERE rolname = $1", role)
     if not exists:
-        await conn.execute(f"CREATE ROLE {READONLY_ROLE} LOGIN PASSWORD {quoted_password}")
+        await conn.execute(f"CREATE ROLE {role} LOGIN PASSWORD {quoted_password}")
     else:
-        await conn.execute(f"ALTER ROLE {READONLY_ROLE} PASSWORD {quoted_password}")
+        await conn.execute(f"ALTER ROLE {role} PASSWORD {quoted_password}")
+
+
+async def _configure_database_roles(conn: asyncpg.Connection, master_password: str) -> None:
+    await _ensure_login_role(conn, READONLY_ROLE, master_password)
+    await _ensure_login_role(conn, EMPLOYEE_READONLY_ROLE, derive_employee_password(master_password))
+
     await conn.execute(f"GRANT USAGE ON SCHEMA company_data TO {READONLY_ROLE}")
     await conn.execute(f"GRANT SELECT ON ALL TABLES IN SCHEMA company_data TO {READONLY_ROLE}")
     await conn.execute(
         f"ALTER DEFAULT PRIVILEGES IN SCHEMA company_data GRANT SELECT ON TABLES TO {READONLY_ROLE}"
     )
+
+    # The employee role can see only curated views. Explicit revokes keep reruns safe if the role
+    # was ever granted broader access during development.
+    await conn.execute(f"REVOKE ALL ON SCHEMA company_data FROM {EMPLOYEE_READONLY_ROLE}")
+    await conn.execute(f"REVOKE ALL ON ALL TABLES IN SCHEMA company_data FROM {EMPLOYEE_READONLY_ROLE}")
+    await conn.execute(f"GRANT USAGE ON SCHEMA company_employee TO {EMPLOYEE_READONLY_ROLE}")
+    await conn.execute(f"GRANT SELECT ON ALL TABLES IN SCHEMA company_employee TO {EMPLOYEE_READONLY_ROLE}")
 
 
 async def _clear_tables(conn: asyncpg.Connection) -> None:
@@ -147,9 +190,6 @@ async def main() -> None:
     try:
         print("\nCreating schema/tables...")
         await conn.execute(SCHEMA_DDL)
-
-        print("Creating read-only role...")
-        await _ensure_readonly_role(conn, readonly_password)
 
         print("Clearing existing rows (idempotent re-seed)...")
         await _clear_tables(conn)
@@ -226,6 +266,12 @@ async def main() -> None:
                 for t in data["support_tickets"]
             ],
         )
+
+        print("Creating employee-safe views...")
+        await conn.execute(EMPLOYEE_VIEWS_DDL)
+
+        print("Configuring executive and employee read-only roles...")
+        await _configure_database_roles(conn, readonly_password)
 
         print("\nDone.")
     finally:

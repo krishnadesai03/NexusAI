@@ -23,6 +23,37 @@ export interface MeResponse {
   email: string;
   display_name: string;
   employee_role: string;
+  persona_slug: string | null;
+  title: string | null;
+  department: string | null;
+  employee_id: number | null;
+  is_demo: boolean;
+}
+
+export interface DemoPersona {
+  slug: string;
+  display_name: string;
+  title: string;
+  role: string;
+  department: string | null;
+}
+
+export interface DemoSessionResponse {
+  token: string;
+  expires_at: string;
+  persona: DemoPersona;
+}
+
+export interface DemoDelivery {
+  id: string;
+  persona_slug: string;
+  channel: "slack" | "email";
+  recipient: string;
+  subject: string | null;
+  content: string;
+  status: string;
+  created_at: string;
+  expires_at: string;
 }
 
 export interface ConversationSummary {

@@ -4,8 +4,8 @@ touches nothing live. Produces all 8 tables' worth of rows as plain Python objec
 gets pushed to the real Postgres schema.
 
 Reuses the same 4 synthetic employees from Component 4 (Priya Nair, Marcus Chen, Jordan Lee,
-Sofia Reyes) inside Engineering, so the fictional "Alderbrook Systems" company is consistent
-across both agents' data.
+Sofia Reyes) inside Engineering and adds the canonical demo executive Matt Davidson, so the
+fictional "Alderbrook Systems" company is consistent across agents and demo personas.
 
 Usage (preview only, no side effects):
     .venv/Scripts/python.exe scripts/seed_database_data.py
@@ -19,7 +19,15 @@ from datetime import date, timedelta
 
 RANDOM_SEED = 42
 
-DEPARTMENTS = ["Engineering", "Sales", "Finance", "Customer Support", "Marketing", "People"]
+DEPARTMENTS = [
+    "Engineering",
+    "Sales",
+    "Finance",
+    "Customer Support",
+    "Marketing",
+    "People",
+    "Executive Office",
+]
 
 ROLES_BY_DEPT = {
     "Engineering": ["Software Engineer", "Senior Software Engineer", "QA Engineer", "Engineering Manager"],
@@ -28,6 +36,7 @@ ROLES_BY_DEPT = {
     "Customer Support": ["Support Agent", "Senior Support Agent", "Support Manager"],
     "Marketing": ["Marketing Specialist", "Content Manager", "Marketing Manager"],
     "People": ["HR Generalist", "Recruiter", "People Manager"],
+    "Executive Office": ["Chief Executive Officer"],
 }
 
 SALARY_RANGE_BY_ROLE_LEVEL = {
@@ -66,6 +75,7 @@ SUPPORT_STATUSES = ["Open", "In Progress", "Resolved", "Closed"]
 DEAL_STAGES = ["Prospecting", "Negotiation", "Won", "Lost"]
 
 KNOWN_ENGINEERS = ["Priya Nair", "Marcus Chen", "Jordan Lee", "Sofia Reyes"]
+KNOWN_EXECUTIVE = "Matt Davidson"
 
 
 @dataclass
@@ -161,6 +171,7 @@ def generate_departments() -> list[Department]:
         "Customer Support": 1_100_000,
         "Marketing": 1_500_000,
         "People": 700_000,
+        "Executive Office": 1_200_000,
     }
     return [Department(id=i + 1, name=name, budget=budgets[name]) for i, name in enumerate(DEPARTMENTS)]
 
@@ -227,6 +238,22 @@ def generate_employees(departments: list[Department], rng: random.Random, total:
             if "Manager" not in emp.role:
                 emp.manager_id = rng.choice(managers).id
         dept.head_employee_id = managers[0].id
+
+    # The public demo's executive persona is a real row in the synthetic company dataset. It is
+    # added after the regular 45-person workforce so existing employee IDs remain stable.
+    executive_department = dept_by_name["Executive Office"]
+    employees.append(
+        Employee(
+            id=len(employees) + 1,
+            name=KNOWN_EXECUTIVE,
+            department_id=executive_department.id,
+            role="Chief Executive Officer",
+            salary=285_000,
+            hire_date=date(2019, 3, 18),
+            manager_id=None,
+        )
+    )
+    executive_department.head_employee_id = employees[-1].id
 
     return employees
 

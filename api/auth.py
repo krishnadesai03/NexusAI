@@ -51,6 +51,11 @@ async def me(user: AuthenticatedUser = Depends(get_current_session)) -> MeRespon
         email=user.email,
         display_name=user.display_name,
         employee_role=user.employee_role,
+        persona_slug=user.persona_slug,
+        title=user.title,
+        department=user.department,
+        employee_id=user.employee_id,
+        is_demo=user.is_demo,
     )
 
 
@@ -59,4 +64,6 @@ async def logout(
     user: AuthenticatedUser = Depends(get_current_session),
     auth_client: AuthClient = Depends(get_auth_client),
 ) -> None:
+    if user.is_demo:
+        return
     await auth_client.logout(user.access_token)

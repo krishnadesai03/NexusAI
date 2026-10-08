@@ -87,8 +87,7 @@ Ruff is configured for correctness-focused linting (no repository-wide formatter
 .venv/Scripts/python.exe -m ruff check .
 ```
 
-Run the web API + frontend locally (needs the same `.env` as everything else plus Supabase Auth
-configuration and a provisioned user):
+Run the v0.4.0 public demo locally (anonymous visitors do not need Supabase Auth credentials):
 
 ```bash
 .venv/Scripts/python.exe -m uvicorn api.main:app --reload --port 8000
@@ -147,9 +146,10 @@ via live testing, both documented in detail in `learnings.md` Component 3's foll
   against this project's actual fixture docs, not guessed — see the chunking section of
   `learnings.md` #3 before changing them for a different corpus.
 
-Scope note: Knowledge Agent only ever covers company-policy-style docs
-(`tests/fixtures/knowledge_docs/` — PTO, expenses, onboarding, runbooks, FAQs). Confluence-sourced
-sprint retro content lives in Performance Agent's scope instead (see below), not this one's.
+Scope note: Knowledge Agent covers labeled company, department, and executive documents under
+`tests/fixtures/knowledge_docs/`. `access_scope` and `departments` metadata are enforced in the
+vector query before chunks reach the model. Confluence-sourced sprint retro content lives in
+Performance Agent's scope instead (see below), not this one's.
 
 **Performance Agent (Component 4, implemented)** — `agents/performance/agent.py`. Answers
 questions about team delivery (sprint velocity, ticket activity, commit history) against a real
@@ -184,8 +184,10 @@ tool is enough. Three guardrail layers stack, in order of what actually matters:
 instruction-following (usually refuses write requests without even calling the tool, but
 unenforced), (2) a deterministic regex pre-filter (`_validate_readonly_query` in
 `postgres_client.py`) that rejects non-`SELECT` text before it's sent, (3) a dedicated read-only
-Postgres role (`enterprise_ai_readonly`, `DATABASE_READONLY_URL`) — the one layer that's actually
-unbypassable, since it's enforced by Postgres itself, not application code. Schema is introspected
+Postgres role — the one layer that's actually unbypassable, since it's enforced by Postgres itself,
+not application code. v0.4.0 selects `enterprise_ai_employee_readonly` for Sofia (security-barrier
+views: safe directory, her own full profile, and limited support-ticket fields) and
+`enterprise_ai_readonly` for Matt (all raw read-only tables). Schema is introspected
 live from `information_schema` at construction (not hardcoded), and includes real distinct values
 for low-cardinality text columns so the LLM doesn't guess spelling/capitalization — see
 `learnings.md` #5 for a live bug this exact gap caused (`'active'` vs. the real `'Active'`).
@@ -202,7 +204,9 @@ capability lives on an optional `ConfirmableAgent` Protocol (`core/agent.py`), c
 agents have nothing to confirm. `scripts/chat.py`'s `_drive_confirmation_menu()` drives this as a
 fixed 3-option menu (Send it / Edit / Cancel) — deliberately not free-text ("yes"/"confirm")
 matching, since a reasonable reply outside the expected phrase list would otherwise be
-misinterpreted.
+misinterpreted. In public demo sessions, scoped `DemoSlackClient`/`DemoEmailClient` adapters write
+confirmed content to `demo_deliveries` instead of invoking Slack or Resend. `/demo/outbox` returns
+only the active session's unexpired captures.
 
 **Conversation memory (Component 7, implemented)** — `orchestrator/memory.py`. `ConversationMemory`
 lives on the `Orchestrator`, not per-agent, because routing can send consecutive turns to different
@@ -226,6 +230,13 @@ not-configured message if its external dependency, credentials, or seed data are
 Startup waits are bounded by `STARTUP_DEPENDENCY_TIMEOUT_SECONDS` (15 seconds by default), so a
 pgvector/Postgres or Atlassian outage cannot indefinitely block the API's `/health` endpoint.
 
+**v0.4.0 persona policy (`access_policy.py`).** The two canonical public personas are Sofia Reyes
+(employee, Engineering, employee ID 4) and Matt Davidson (executive/CEO, Executive Office,
+employee ID 46). A typed `Capability` set is threaded into each per-session agent. Both personas
+can read the complete current Engineering Jira/Confluence/Bitbucket fixture set and can
+draft/confirm simulated communications. Knowledge and database access differ by role as described
+above. Capability checks occur before external calls; missing capabilities fail closed.
+
 **Web API & frontend (Component 9, implemented) + live trace streaming (Component 10,
 implemented).** A separate, top-level `api/` package (NOT `src/enterprise_ai/api/`, which is an
 empty placeholder left from Component 0.5's original scaffold — don't confuse the two) is a real,
@@ -235,9 +246,12 @@ access/refresh tokens and JWT verification), `api/conversation_store.py` (user-o
 turns/pending actions), `api/conversations.py` (history CRUD), `api/chat.py` (`POST /chat`, streamed
 as Server-Sent Events), and `api/pending.py` (durable confirm/cancel/revise). A matching Next.js
 frontend lives in `web/` with a conversation sidebar, restored transcripts, live tracing, and
-pending-action controls. Versioned schema/RLS migrations live under `supabase/migrations/`;
-authenticated clients can read only their rows and cannot write server-managed state. The full
-offline suite has 84 tests.
+pending-action controls. v0.4.0 adds public persona discovery/session creation (`/demo/personas`,
+`/demo/sessions`), a recruiter-facing persona chooser, persona-specific tokens in browser storage,
+and the session-owned `/outbox` UI. Demo tokens are stored only as SHA-256 hashes server-side;
+session expiry slides for 24 hours, while conversations inactive for 24 hours are omitted.
+Versioned schema/RLS migrations live under `supabase/migrations/`; clients cannot write
+server-managed state directly. The full offline suite has 114 tests.
 
 The streaming `/chat` response is powered by a live trace mechanism threaded through the whole
 orchestrator: `Agent.handle()` carries an optional third `on_event: OnEvent | None` callback
@@ -282,7 +296,9 @@ Real agentic tracing (`ToolCorrectnessMetric`/`TaskCompletionMetric`, which need
 `@observe` instrumentation) is a documented future upgrade, not built — same deferral pattern as
 other explicitly-scoped future work.
 
-**Current implementation status:** Components 0/0.5/1/3/4/5/6/7/8/9/10/11/12/13 are implemented.
+**Current implementation status:** Components 0/0.5/1/3/4/5/6/7/8/9/10/11/12/13 and the v0.4.0
+public role-based demo workflow are implemented. The offline suite has 114 passing tests, and the
+Next.js frontend passes lint, TypeScript checking, and a production build.
 Persistent memory is locally live-verified; the automated safe stage/cancel smoke test still needs
 to be run against the deployed URL after this release. Component 11 is live-verified. Component 12
 (parallel tool execution plus session-scoped Performance/Database tool-result caching) is covered

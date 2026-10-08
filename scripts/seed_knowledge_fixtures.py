@@ -11,11 +11,14 @@ Usage: docker compose up -d postgres, fill in .env (OPENAI_API_KEY), then run
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 FIXTURES_DIR = ROOT / "tests" / "fixtures" / "knowledge_docs"
+ACCESS_MANIFEST_PATH = FIXTURES_DIR / "_access_manifest.json"
+ALLOWED_ACCESS_SCOPES = {"company", "department", "executive"}
 
 
 def _load_dotenv(path: Path) -> None:
@@ -27,6 +30,37 @@ def _load_dotenv(path: Path) -> None:
             continue
         key, _, value = line.partition("=")
         os.environ.setdefault(key.strip(), value.strip())
+
+
+def _load_access_manifest() -> dict[str, dict]:
+    manifest = json.loads(ACCESS_MANIFEST_PATH.read_text(encoding="utf-8"))
+    document_names = {
+        path.name for path in FIXTURES_DIR.iterdir() if path.suffix in {".md", ".txt"}
+    }
+    manifest_names = set(manifest)
+
+    missing = sorted(document_names - manifest_names)
+    unknown = sorted(manifest_names - document_names)
+    if missing or unknown:
+        raise ValueError(
+            f"Knowledge access manifest mismatch: missing={missing}, unknown={unknown}"
+        )
+
+    for filename, access in manifest.items():
+        scope = access.get("access_scope")
+        departments = access.get("departments")
+        if scope not in ALLOWED_ACCESS_SCOPES:
+            raise ValueError(f"Invalid access scope for {filename}: {scope!r}")
+        if not isinstance(departments, list) or not all(
+            isinstance(department, str) and department.strip() for department in departments
+        ):
+            raise ValueError(f"Invalid departments for {filename}: {departments!r}")
+        if scope == "department" and not departments:
+            raise ValueError(f"Department-scoped document has no department: {filename}")
+        if scope != "department" and departments:
+            raise ValueError(f"Only department-scoped documents may list departments: {filename}")
+
+    return manifest
 
 
 async def main() -> None:
@@ -43,6 +77,7 @@ async def main() -> None:
 
     embedding_client = OpenAIEmbeddingClient()
     store = await PgVectorStore.connect(dsn)
+    access_manifest = _load_access_manifest()
 
     doc_count = 0
     chunk_count = 0
@@ -52,6 +87,7 @@ async def main() -> None:
 
         text = doc_path.read_text(encoding="utf-8")
         chunks = chunk_document(text)
+        access = access_manifest[doc_path.name]
 
         for i, chunk in enumerate(chunks):
             embedding = await embedding_client.embed(chunk)
@@ -59,7 +95,11 @@ async def main() -> None:
                 doc_id=f"{doc_path.name}::{i}",
                 text=chunk,
                 embedding=embedding,
-                metadata={"source_file": doc_path.name},
+                metadata={
+                    "source_file": doc_path.name,
+                    "access_scope": access["access_scope"],
+                    "departments": access["departments"],
+                },
             )
             chunk_count += 1
 

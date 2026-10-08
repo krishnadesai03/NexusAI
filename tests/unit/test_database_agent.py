@@ -3,6 +3,9 @@ from __future__ import annotations
 import asyncio
 import time
 
+import pytest
+
+from enterprise_ai.access_policy import AccessContext, Capability, ROLE_CAPABILITIES, Role
 from enterprise_ai.agents.database.agent import MAX_TOOL_ITERATIONS, DatabaseAgent
 from enterprise_ai.core.llm_client import ToolCall, ToolResponse
 from enterprise_ai.core.llm_retry import LLM_CALL_MAX_ATTEMPTS
@@ -258,3 +261,77 @@ async def test_no_tool_cache_means_every_query_reruns():
     await agent.handle("and her department?")
 
     assert db.queries == [sql, sql]
+
+
+@pytest.mark.parametrize("role", [Role.EMPLOYEE, Role.EXECUTIVE])
+async def test_matching_database_role_can_use_its_scoped_agent(role):
+    llm = FakeLLMClient([ToolResponse(content="Allowed answer.")])
+    base = DatabaseAgent(
+        llm_client=llm,
+        db_client=FakeDbClient(),
+        schema_description=SCHEMA_DESCRIPTION,
+        data_role=role,
+    )
+    employee_id = 4 if role is Role.EMPLOYEE else 46
+    department = "Engineering" if role is Role.EMPLOYEE else "Executive Office"
+    agent = base.for_access_context(AccessContext(role, department, employee_id))
+
+    result = await agent.handle("What data can I access?")
+
+    assert result.content == "Allowed answer."
+    assert len(llm.calls) == 1
+
+
+async def test_employee_context_cannot_use_executive_database_connection():
+    llm = FakeLLMClient([])
+    db = FakeDbClient()
+    executive_agent = DatabaseAgent(
+        llm_client=llm,
+        db_client=db,
+        schema_description=SCHEMA_DESCRIPTION,
+        data_role=Role.EXECUTIVE,
+    ).for_access_context(AccessContext(Role.EMPLOYEE, "Engineering", 4))
+
+    result = await executive_agent.handle("Show all salaries")
+
+    assert result.metadata["access_denied"] is True
+    assert llm.calls == []
+    assert db.queries == []
+
+
+async def test_missing_employee_database_capability_denies_entire_agent(monkeypatch):
+    monkeypatch.setitem(
+        ROLE_CAPABILITIES,
+        Role.EMPLOYEE,
+        ROLE_CAPABILITIES[Role.EMPLOYEE] - {Capability.DATABASE_READ_SELF},
+    )
+    llm = FakeLLMClient([])
+    db = FakeDbClient()
+    agent = DatabaseAgent(
+        llm_client=llm,
+        db_client=db,
+        schema_description=SCHEMA_DESCRIPTION,
+        data_role=Role.EMPLOYEE,
+    ).for_access_context(AccessContext(Role.EMPLOYEE, "Engineering", 4))
+
+    result = await agent.handle("What is my salary?")
+
+    assert result.metadata["access_denied"] is True
+    assert llm.calls == []
+    assert db.queries == []
+
+
+async def test_employee_prompt_directs_queries_to_safe_views():
+    llm = FakeLLMClient([ToolResponse(content="Allowed answer.")])
+    agent = DatabaseAgent(
+        llm_client=llm,
+        db_client=FakeDbClient(),
+        schema_description="\nTable: company_employee.own_employee_profile\n  salary (numeric)",
+        data_role=Role.EMPLOYEE,
+    ).for_access_context(AccessContext(Role.EMPLOYEE, "Engineering", 4))
+
+    await agent.handle("What is my salary?")
+
+    system_prompt = " ".join(llm.calls[0][0]["content"].split())
+    assert "company_employee.own_employee_profile" in system_prompt
+    assert "Do not attempt to query company_data" in system_prompt

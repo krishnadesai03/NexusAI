@@ -1,0 +1,86 @@
+{
+  "architecture_overview.md": {
+    "access_scope": "department",
+    "departments": ["Engineering"]
+  },
+  "code_of_conduct.md": {
+    "access_scope": "company",
+    "departments": []
+  },
+  "customer_support_escalation_playbook.md": {
+    "access_scope": "department",
+    "departments": ["Customer Support"]
+  },
+  "executive_company_strategy_2027.md": {
+    "access_scope": "executive",
+    "departments": []
+  },
+  "executive_workforce_plan_2027.md": {
+    "access_scope": "executive",
+    "departments": []
+  },
+  "expense_policy.md": {
+    "access_scope": "company",
+    "departments": []
+  },
+  "faq_benefits.txt": {
+    "access_scope": "company",
+    "departments": []
+  },
+  "faq_it_helpdesk.txt": {
+    "access_scope": "company",
+    "departments": []
+  },
+  "finance_month_end_close.md": {
+    "access_scope": "department",
+    "departments": ["Finance"]
+  },
+  "marketing_campaign_launch_checklist.md": {
+    "access_scope": "department",
+    "departments": ["Marketing"]
+  },
+  "onboarding_guide_engineering.md": {
+    "access_scope": "department",
+    "departments": ["Engineering"]
+  },
+  "onboarding_guide_general.txt": {
+    "access_scope": "company",
+    "departments": []
+  },
+  "people_hiring_process.md": {
+    "access_scope": "department",
+    "departments": ["People"]
+  },
+  "pto_policy_india.md": {
+    "access_scope": "company",
+    "departments": []
+  },
+  "pto_policy_us.md": {
+    "access_scope": "company",
+    "departments": []
+  },
+  "remote_work_policy.md": {
+    "access_scope": "company",
+    "departments": []
+  },
+  "runbook_db_backup_restore.md": {
+    "access_scope": "department",
+    "departments": ["Engineering"]
+  },
+  "runbook_deploy_rollback.md": {
+    "access_scope": "department",
+    "departments": ["Engineering"]
+  },
+  "runbook_oncall_incident.md": {
+    "access_scope": "department",
+    "departments": ["Engineering"]
+  },
+  "sales_discount_approval_playbook.md": {
+    "access_scope": "department",
+    "departments": ["Sales"]
+  },
+  "travel_policy.md": {
+    "access_scope": "company",
+    "departments": []
+  }
+}

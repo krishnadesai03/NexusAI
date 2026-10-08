@@ -1,5 +1,7 @@
 # Nexus AI — AI Internal Company Assistant
 
+**Current version: 0.4.0** — public role-based demo workflow
+
 An orchestrator that routes employee requests to specialized sub-agents — knowledge/RAG,
 performance/Atlassian, database/SQL, and communication — and fans the results back into one
 response. Built to demonstrate real multi-agent orchestration patterns (hybrid routing, parallel
@@ -20,8 +22,9 @@ specialized agent(s) actually own the answer:
   history against a real Jira/Confluence/Bitbucket sandbox.
 - **Database Agent** — answers questions about structured company data (employees, deals,
   expenses, support tickets) by writing and running real, read-only SQL.
-- **Communication Agent** — sends a Slack message or email on the user's behalf, but only after
-  a human explicitly confirms a staged draft.
+- **Communication Agent** — drafts Slack messages and emails behind a human confirmation step.
+  Public demo confirmations are captured in a session-owned Demo Outbox and never reach real
+  external accounts.
 
 A hybrid router (an LLM reasoning about intent, constrained to a validated schema of real agent
 names) decides which agent(s) handle a given request — a single request can fan out to more than
@@ -42,15 +45,20 @@ tool calls — streams live to the frontend over Server-Sent Events.
   destination-never-LLM-controlled rule for messaging.
 - **Human-in-the-loop confirmation** — the Communication Agent only ever stages a draft; nothing
   sends until an explicit Send / Edit / Cancel decision.
-- **Persistent, user-owned conversation memory** — complete transcripts and pending approvals live
-  in Supabase; only the last five turns are threaded into agents to keep prompts bounded.
+- **Anonymous, persona-owned demo sessions** — visitors choose Sofia Reyes (Employee) or Matt
+  Davidson (Executive) without credentials. Each browser retains an independent session per
+  persona, while inactive demo conversations and captured messages expire after 24 hours.
+- **Role-based access control enforced before tools run** — knowledge retrieval, database
+  credentials/views, and agent capabilities are selected from the active persona. Access is not
+  left to prompt instructions alone.
 - **Session-scoped tool-result caching + parallel tool calls** — independent tool calls within one
   turn run concurrently, and repeated lookups within the same conversation are memoized instead of
   re-fetched.
 - **Live orchestration trace** — routing decisions, agent start/finish, and every tool call stream
   to the frontend in real time as they happen, not just after the whole request finishes.
-- **A real web app** — login, streaming chat, a live trace panel, and a 3-choice confirmation card
-  for staged Slack/email drafts, backed by a FastAPI API and a Next.js frontend.
+- **A recruiter-friendly web app** — public persona landing page, persistent chat, live trace
+  panel, profile switching, and a visible Demo Outbox for confirmed Slack/email simulations,
+  backed by a FastAPI API and a Next.js frontend.
 - **An evaluation harness** — DeepEval-based RAG metrics (contextual precision/recall,
   faithfulness, answer relevancy) for the Knowledge Agent, and LLM-judge correctness checks for
   Performance and Database agents, built as a regression suite from real bugs found during
@@ -94,9 +102,17 @@ imports a vendor SDK directly: an `LLMClient` protocol sits in front of OpenAI, 
 pgvector, each with exactly one real adapter. This is what makes every agent testable with fakes
 instead of live API calls.
 
-The Communication Agent is the only agent with a real side effect, so it gets two extra
-guardrails the read-only agents don't need: the LLM never controls the send destination, and nothing sends immediately — `handle()` only ever stages a pending draft, and a separate,
-explicit confirmation step actually executes it.
+The active persona is resolved into a typed capability set before an agent or data adapter is
+constructed. Sofia can retrieve company and Engineering documents, use the shared Engineering
+performance fixtures, see a safe company directory plus her own full database profile, and read
+anonymized support operations. Matt can retrieve company, department, and executive documents and
+use the full read-only business database. Both personas can stage communications.
+
+The Communication Agent is the only workflow shaped like a side effect, so it gets two extra
+guardrails the read-only agents don't need: the LLM never controls an arbitrary destination, and
+nothing happens immediately—`handle()` only stages a pending draft. For anonymous demo sessions,
+confirmation writes the rendered Slack/email message to `demo_deliveries`; real Slack and Resend
+clients are never invoked.
 
 ## Project Structure
 
@@ -112,7 +128,7 @@ enterprise-ai/
 │   ├── core/                 # Agent/LLMClient/EmbeddingClient protocols, ToolCache, retry logic
 │   ├── integrations/         # Concrete adapters: pgvector, Atlassian MCP/REST, Postgres, Slack/Resend
 │   └── bootstrap.py          # Shared resource + per-session wiring, reused by every entry point
-├── api/                       # FastAPI backend (Supabase Auth, durable conversations, chat/SSE)
+├── api/                       # FastAPI backend (demo sessions, durable chat, outbox, chat/SSE)
 ├── web/                        # Next.js frontend
 ├── evaluation/                 # DeepEval-based RAG and agent-correctness evaluation harness
 ├── scripts/                    # CLI chat client, live smoke tests, data-seeding scripts
@@ -149,7 +165,9 @@ be rejected (see `.env.example`'s Communication Agent section).
 
 ### Supabase setup
 
-The web application uses Supabase for authentication and durable conversation storage:
+The web application uses Supabase for anonymous demo sessions, durable conversations, pending
+actions, and the Demo Outbox. Legacy credential authentication remains available at the API level
+but is intentionally not exposed in the public UI:
 
 1. Create a Supabase project and copy its writable Postgres connection string into `DATABASE_URL`.
 2. Copy the project URL and publishable API key into `SUPABASE_URL` and
@@ -160,13 +178,12 @@ The web application uses Supabase for authentication and durable conversation st
    .venv/Scripts/python.exe scripts/apply_supabase_migrations.py
    ```
 
-4. In Supabase **Authentication → Users**, create the application user after applying the
-   migrations so the profile-creation trigger can create its matching `profiles` row.
-5. Put that user's credentials in `SMOKE_TEST_EMAIL` and `SMOKE_TEST_PASSWORD`, then verify Auth,
-   RLS, persistence, and logout revocation:
+4. Seed the synthetic knowledge and company database fixtures. The seeders attach knowledge
+   access labels and create the separate employee/executive read-only database surfaces.
 
    ```bash
-   .venv/Scripts/python.exe scripts/check_persistent_sessions.py
+   .venv/Scripts/python.exe scripts/seed_knowledge_fixtures.py
+   .venv/Scripts/python.exe scripts/push_database_fixtures.py
    ```
 
 ## Usage
@@ -177,16 +194,17 @@ The web application uses Supabase for authentication and durable conversation st
 .venv/Scripts/python.exe scripts/chat.py
 ```
 
-**Full web app** (needs the same `.env` as above plus a provisioned Supabase Auth user):
+**Full public demo web app** (no visitor credentials required):
 
 ```bash
 .venv/Scripts/python.exe -m uvicorn api.main:app --reload --port 8000
 cd web && npm install && npm run dev   # in a separate terminal — serves http://localhost:3000
 ```
 
-The persistence path has been verified against Supabase (Auth, RLS, durable turn round-trip, and
-logout revocation) and through the complete local API smoke test. The deployed Render/Vercel
-smoke test remains the final post-deployment check.
+Open `http://localhost:3000`, choose Sofia Reyes or Matt Davidson, and the browser will create or
+reuse that persona's anonymous demo session. Choosing **Switch profile** preserves each persona's
+token independently, so returning to either profile within the active window restores only that
+profile's conversations.
 
 Example questions to try, one per agent:
 
@@ -194,7 +212,8 @@ Example questions to try, one per agent:
 - *"How many tickets did Priya Nair complete in sprint 6?"* → Performance Agent
 - *"What's the average expense claim amount this quarter?"* → Database Agent
 - *"Post a Slack message letting the team know the demo went well."* → Communication Agent,
-  stages a draft and waits for you to confirm, edit, or cancel it
+  stages a draft and waits for confirmation; confirming captures it in Demo Outbox without
+  contacting Slack
 
 A single request can also span more than one agent at once — e.g. *"Compare last sprint's
 velocity to what the docs promised"* routes to both Performance and Knowledge concurrently.

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 
+from enterprise_ai.access_policy import AccessContext, Capability, ROLE_CAPABILITIES
 from enterprise_ai.core.agent import AgentResult, OnEvent, emit_event
 from enterprise_ai.core.llm_client import LLMClient
 from enterprise_ai.core.llm_retry import LLMUnavailableError, call_tool_with_retry
@@ -133,12 +134,25 @@ class PerformanceAgent:
         confluence_client: ConfluenceClient,
         bitbucket_client: BitbucketClient,
         sprint_calendar: list[dict],
+        access_context: AccessContext | None = None,
     ) -> None:
         self._llm_client = llm_client
         self._jira_client = jira_client
         self._confluence_client = confluence_client
         self._bitbucket_client = bitbucket_client
         self._sprint_calendar = sprint_calendar
+        self._access_context = access_context
+
+    def for_access_context(self, access_context: AccessContext) -> PerformanceAgent:
+        """Create a cheap per-session view over the shared Atlassian clients."""
+        return PerformanceAgent(
+            llm_client=self._llm_client,
+            jira_client=self._jira_client,
+            confluence_client=self._confluence_client,
+            bitbucket_client=self._bitbucket_client,
+            sprint_calendar=self._sprint_calendar,
+            access_context=access_context,
+        )
 
     async def _fetch_raw(self, name: str, arguments: dict) -> object:
         if name == "search_jira_issues":
@@ -189,6 +203,17 @@ class PerformanceAgent:
         on_event: OnEvent | None = None,
         tool_cache: ToolCache | None = None,
     ) -> AgentResult:
+        if (
+            self._access_context is not None
+            and Capability.PERFORMANCE_READ_ENGINEERING
+            not in ROLE_CAPABILITIES[self._access_context.role]
+        ):
+            return AgentResult(
+                agent_name="performance",
+                content="You don't have permission to access Engineering performance data.",
+                metadata={"citations": [], "access_denied": True},
+            )
+
         messages = [
             {"role": "system", "content": _build_system_prompt(self._sprint_calendar)},
             *(history or []),
