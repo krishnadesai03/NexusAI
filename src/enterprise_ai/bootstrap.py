@@ -186,9 +186,8 @@ async def build_shared_resources() -> SharedResources:
         sprint_calendar = json.loads(performance_state_file.read_text())["sprints"]
         try:
             # Jira and Confluence go through Atlassian's Remote MCP Server now (learnings.md
-            # #4/#12 follow-up: the original "blocked by EAP" conclusion only held for the
-            # generic Teamwork Graph endpoint tested at the time — the /preview endpoint's
-            # direct Jira/Confluence tools work today with the same ATLASSIAN_MCP_TOKEN).
+            # #4/#12 follow-up: the current v2 endpoint exposes direct Jira/Confluence tools
+            # to an ATLASSIAN_MCP_TOKEN created for the Atlassian MCP V2 app).
             # Bitbucket stays on direct REST — it isn't exposed through this MCP server yet.
             async with asyncio.timeout(_STARTUP_DEPENDENCY_TIMEOUT_SECONDS):
                 atlassian_mcp_session = await AtlassianMCPSession.connect()

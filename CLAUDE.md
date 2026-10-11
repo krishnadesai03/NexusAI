@@ -162,12 +162,13 @@ several lookups, not one). This required a second method on `LLMClient` alongsid
 native function-calling; the agent itself owns the multi-turn message history, keeping the
 adapter thin.
 
-Jira and Confluence data access now goes through Atlassian's Remote MCP Server preview endpoint
+Jira and Confluence data access now goes through Atlassian's Remote MCP Server v2 endpoint
 (`integrations/atlassian/mcp_client.py`); Bitbucket remains on direct REST because that MCP server
 does not expose the commit-level data this project uses. `AtlassianMCPSession` is opened once per
 process by `build_shared_resources()` and closed during shutdown. The older generic Teamwork Graph
-MCP endpoint really was blocked during the first investigation, but `/v1/mcp/preview` was later
-found and verified live; `learnings.md` Component 4 preserves both stages of that investigation.
+MCP endpoint really was blocked during the first investigation; the integration now uses
+`/v2/mcp` with an Atlassian MCP V2 token and least-privilege `agent-interface` scopes.
+`learnings.md` Component 4 preserves the earlier investigation.
 One auth detail still matters for fixture scripts: Bitbucket REST uses Basic auth with email,
 while git-over-HTTPS uses the Bitbucket *username*.
 
@@ -246,12 +247,16 @@ access/refresh tokens and JWT verification), `api/conversation_store.py` (user-o
 turns/pending actions), `api/conversations.py` (history CRUD), `api/chat.py` (`POST /chat`, streamed
 as Server-Sent Events), and `api/pending.py` (durable confirm/cancel/revise). A matching Next.js
 frontend lives in `web/` with a conversation sidebar, restored transcripts, live tracing, and
-pending-action controls. v0.4.0 adds public persona discovery/session creation (`/demo/personas`,
+pending-action controls. Empty conversations show four agent-specific starter prompts; selecting
+one fills the controlled `ChatInput` without sending it and dismisses the prompts for that
+conversation. Sending appends an optimistic user-only turn immediately, displays `Thinking...`,
+then replaces that temporary negative-ID turn with the server's durable turn. v0.4.0 adds public
+persona discovery/session creation (`/demo/personas`,
 `/demo/sessions`), a recruiter-facing persona chooser, persona-specific tokens in browser storage,
 and the session-owned `/outbox` UI. Demo tokens are stored only as SHA-256 hashes server-side;
 session expiry slides for 24 hours, while conversations inactive for 24 hours are omitted.
 Versioned schema/RLS migrations live under `supabase/migrations/`; clients cannot write
-server-managed state directly. The full offline suite has 114 tests.
+server-managed state directly. The full offline suite has 117 tests.
 
 The streaming `/chat` response is powered by a live trace mechanism threaded through the whole
 orchestrator: `Agent.handle()` carries an optional third `on_event: OnEvent | None` callback
@@ -297,7 +302,7 @@ Real agentic tracing (`ToolCorrectnessMetric`/`TaskCompletionMetric`, which need
 other explicitly-scoped future work.
 
 **Current implementation status:** Components 0/0.5/1/3/4/5/6/7/8/9/10/11/12/13 and the v0.4.0
-public role-based demo workflow are implemented. The offline suite has 114 passing tests, and the
+public role-based demo workflow are implemented. The offline suite has 117 passing tests, and the
 Next.js frontend passes lint, TypeScript checking, and a production build.
 Persistent memory is locally live-verified; the automated safe stage/cancel smoke test still needs
 to be run against the deployed URL after this release. Component 11 is live-verified. Component 12

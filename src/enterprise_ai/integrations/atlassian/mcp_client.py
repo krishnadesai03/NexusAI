@@ -9,12 +9,10 @@ import httpx2
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 
-# The /preview endpoint, not /v1/mcp (learnings.md #4 follow-up) — the original MCP
-# investigation only tested the generic Teamwork Graph interface at /v1/mcp and got a genuine
-# 403 "Insufficient API token scopes" there; live re-testing found /v1/mcp/preview exposes
-# direct, Jira/Confluence-shaped tools (getJiraIssue, searchJiraIssuesUsingJql,
-# getConfluenceContent, searchConfluence) that work today with the same ATLASSIAN_MCP_TOKEN.
-_MCP_URL = "https://mcp.atlassian.com/v1/mcp/preview"
+# Current Atlassian Rovo MCP endpoint. The personal token must be created for the
+# "Atlassian MCP V2" app with the least-privilege agent-interface scopes documented in
+# .env.example.
+_MCP_URL = "https://mcp.atlassian.com/v2/mcp"
 
 
 class AtlassianMCPError(RuntimeError):
@@ -79,10 +77,30 @@ class AtlassianMCPSession:
 
     async def call(self, tool_name: str, arguments: dict) -> dict:
         result = await self._session.call_tool(tool_name, arguments={"cloudId": self.cloud_id, **arguments})
-        payload = json.loads(result.content[0].text)
+
+        text_parts = [item.text for item in result.content if hasattr(item, "text")]
+        response_text = "\n".join(text_parts).strip()
+        if result.is_error:
+            message = response_text or "Atlassian MCP returned an unspecified tool error."
+            raise AtlassianMCPError(f"{tool_name}: {message}")
+
+        if isinstance(result.structured_content, dict):
+            payload = result.structured_content
+        else:
+            try:
+                payload = json.loads(response_text)
+            except json.JSONDecodeError as exc:
+                preview = response_text[:200] or "<empty response>"
+                raise AtlassianMCPError(
+                    f"{tool_name}: Atlassian MCP returned a non-JSON response: {preview}"
+                ) from exc
+
         if payload.get("error"):
             raise AtlassianMCPError(f"{tool_name}: {payload.get('message')}")
-        return payload["data"]
+        data = payload.get("data", payload)
+        if not isinstance(data, dict):
+            raise AtlassianMCPError(f"{tool_name}: Atlassian MCP returned an unexpected response shape.")
+        return data
 
     async def close(self) -> None:
         await self._exit_stack.aclose()

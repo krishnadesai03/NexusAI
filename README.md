@@ -57,8 +57,10 @@ tool calls — streams live to the frontend over Server-Sent Events.
 - **Live orchestration trace** — routing decisions, agent start/finish, and every tool call stream
   to the frontend in real time as they happen, not just after the whole request finishes.
 - **A recruiter-friendly web app** — public persona landing page, persistent chat, live trace
-  panel, profile switching, and a visible Demo Outbox for confirmed Slack/email simulations,
-  backed by a FastAPI API and a Next.js frontend.
+  panel, profile switching, four agent-specific starter questions, and a visible Demo Outbox for
+  confirmed Slack/email simulations, backed by a FastAPI API and a Next.js frontend. Selecting a
+  starter fills the input without sending it, and submitted questions render immediately while
+  the streamed answer is still being prepared.
 - **An evaluation harness** — DeepEval-based RAG metrics (contextual precision/recall,
   faithfulness, answer relevancy) for the Knowledge Agent, and LLM-judge correctness checks for
   Performance and Database agents, built as a regression suite from real bugs found during
@@ -208,11 +210,14 @@ profile's conversations.
 
 Example questions to try, one per agent:
 
-- *"What's our PTO policy in the US?"* → Knowledge Agent
-- *"How many tickets did Priya Nair complete in sprint 6?"* → Performance Agent
-- *"What's the average expense claim amount this quarter?"* → Database Agent
-- *"Post a Slack message letting the team know the demo went well."* → Communication Agent,
-  stages a draft and waits for confirmation; confirming captures it in Demo Outbox without
+- *"I'm planning a client trip. What travel expenses are covered, and which ones need approval?"*
+  → Knowledge Agent
+- *"How has the Engineering team's completed work changed over the last three sprints?"*
+  → Performance Agent
+- *"Break down support tickets by priority and show how many have been resolved."*
+  → Database Agent
+- *"Draft a Slack message thanking the team for their hard work this week."* → Communication
+  Agent, stages a draft and waits for confirmation; confirming captures it in Demo Outbox without
   contacting Slack
 
 A single request can also span more than one agent at once — e.g. *"Compare last sprint's

@@ -8,7 +8,11 @@ Next.js 16 frontend for the Nexus AI public role-based demo.
 2. The visitor chooses Sofia Reyes (Employee) or Matt Davidson (Executive).
 3. The browser reuses that persona's valid token or creates an anonymous demo session.
 4. `/chat` restores only that session's active conversations and streams orchestration events.
-5. Confirmed Slack/email drafts are captured at `/outbox`; no external message is sent.
+5. Every empty conversation offers one starter question for each specialized agent. Selecting one
+   fills and focuses the input without sending it; the cards then disappear for that conversation.
+6. On submission, the question appears immediately with a `Thinking...` indicator until the
+   streamed server turn replaces it.
+7. Confirmed Slack/email drafts are captured at `/outbox`; no external message is sent.
 
 The browser stores an independent opaque token for each persona in `localStorage`. **Switch
 profile** clears only the active token, allowing either persona's conversation to be restored when
@@ -39,7 +43,7 @@ Open [http://localhost:3000](http://localhost:3000). The client uses
 | Route | Purpose |
 |---|---|
 | `/` | Public persona chooser |
-| `/chat` | Persona-scoped conversations and live trace |
+| `/chat` | Persona-scoped conversations, starter prompts, optimistic messages, and live trace |
 | `/outbox` | Session-scoped simulated Slack/email deliveries |
 | `/login` | Legacy URL; redirects to `/` |
 

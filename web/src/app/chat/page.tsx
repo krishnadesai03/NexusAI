@@ -22,6 +22,7 @@ import type { AgentResultResponse, ChatTurn, ConversationSummary, MeResponse } f
 import { AgentReply } from "@/components/AgentReply";
 import { ChatInput } from "@/components/ChatInput";
 import { PendingActionCard } from "@/components/PendingActionCard";
+import { StarterPrompts } from "@/components/StarterPrompts";
 import { TracePanel } from "@/components/TracePanel";
 
 interface PendingRef {
@@ -43,7 +44,10 @@ export default function ChatPage() {
   const [pendingBusy, setPendingBusy] = useState(false);
   const [pending, setPending] = useState<PendingRef | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [draftMessage, setDraftMessage] = useState("");
+  const [dismissedStarters, setDismissedStarters] = useState<Set<string>>(() => new Set());
   const scrollRef = useRef<HTMLDivElement>(null);
+  const optimisticTurnIdRef = useRef(-1);
 
   useEffect(() => {
     if (!getToken()) {
@@ -74,6 +78,7 @@ export default function ChatPage() {
 
   async function openConversation(id: string) {
     setError(null);
+    setDraftMessage("");
     const detail = await getConversation(id);
     const restored: ChatTurn[] = detail.turns.map((turn) => ({
       id: turn.id,
@@ -93,6 +98,7 @@ export default function ChatPage() {
       setConversations((current) => [created, ...current]);
       setActiveConversationId(created.id);
       setTurns([]);
+      setDraftMessage("");
       setPending(null);
       setTrace(emptyTrace());
     } catch (err) {
@@ -125,11 +131,25 @@ export default function ChatPage() {
     router.push("/");
   }
 
+  function handleStarterSelect(question: string) {
+    if (!activeConversationId) return;
+    setDraftMessage(question);
+    setDismissedStarters((current) => new Set(current).add(activeConversationId));
+  }
+
   async function handleSend(message: string) {
     if (!activeConversationId) return;
+    const optimisticTurnId = optimisticTurnIdRef.current--;
+    const optimisticTurn: ChatTurn = {
+      id: optimisticTurnId,
+      userMessage: message,
+      routedTo: [],
+      results: {},
+    };
     setError(null);
     setSending(true);
     setTrace(emptyTrace());
+    setTurns((current) => [...current, optimisticTurn]);
     try {
       const response = await streamChatMessage(activeConversationId, message, (event) => {
         setTrace((previous) => applyTraceEvent(previous, event));
@@ -140,8 +160,8 @@ export default function ChatPage() {
         routedTo: response.routed_to,
         results: response.results,
       };
-      setTurns((current) => [...current, turn]);
-      setPending(findPendingInTurns([...turns, turn]));
+      setTurns((current) => current.map((existing) => (existing.id === optimisticTurnId ? turn : existing)));
+      setPending(findPendingInTurns([turn]));
       setConversations(await listConversations());
     } catch (err) {
       handleApiError(err);
@@ -206,7 +226,13 @@ export default function ChatPage() {
       <aside className="conversation-sidebar">
         <div className="conversation-sidebar-header">
           <span>Conversations</span>
-          <button onClick={handleNewConversation} aria-label="New conversation">+</button>
+          <button
+            onClick={handleNewConversation}
+            disabled={sending || pendingBusy}
+            aria-label="New conversation"
+          >
+            +
+          </button>
         </div>
         <div className="conversation-list">
           {conversations.map((conversation) => (
@@ -268,7 +294,9 @@ export default function ChatPage() {
         </div>
         <div className="chat-body">
           <div className="chat-scroll-inner">
-            {!loading && turns.length === 0 && <p className="empty-state">Ask a question to get started.</p>}
+            {!loading && turns.length === 0 && activeConversationId && !dismissedStarters.has(activeConversationId) && (
+              <StarterPrompts onSelect={handleStarterSelect} />
+            )}
             {loading && <p className="empty-state">Loading your conversations...</p>}
             {turns.map((turn) => (
               <div key={turn.id} style={{ display: "contents" }}>
@@ -295,7 +323,12 @@ export default function ChatPage() {
         </div>
 
         {error && <div className="inline-error">{error}</div>}
-        <ChatInput disabled={loading || sending || pending !== null} onSend={handleSend} />
+        <ChatInput
+          disabled={loading || sending || pending !== null}
+          value={draftMessage}
+          onValueChange={setDraftMessage}
+          onSend={handleSend}
+        />
       </div>
       {working && <TracePanel trace={trace} />}
     </div>
