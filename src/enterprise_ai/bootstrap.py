@@ -101,9 +101,7 @@ class _UnseededKnowledgeAgent:
 
 
 class _UnseededDatabaseAgent:
-    """Fallback when the company_data schema / read-only role hasn't been created yet (e.g. a
-    fresh checkout that hasn't run push_database_fixtures.py) — connecting would otherwise fail
-    with an unhelpful Postgres auth error instead of a clear message."""
+    """Fallback when a role-specific database connection could not be initialized."""
 
     async def handle(
         self,
@@ -114,8 +112,9 @@ class _UnseededDatabaseAgent:
     ) -> AgentResult:
         return AgentResult(
             agent_name="database",
-            content="The company database hasn't been seeded in this environment yet — run "
-            "scripts/push_database_fixtures.py first.",
+            content="The company database is temporarily unavailable. Its schema may not be "
+            "seeded, or this profile's read-only database connection may have failed to initialize. "
+            "Check the API startup logs and run scripts/push_database_fixtures.py if needed.",
         )
 
 
@@ -222,8 +221,8 @@ async def build_shared_resources() -> SharedResources:
             data_role=Role.EXECUTIVE,
         )
         logger.info("Database agent initialized")
-    except Exception as exc:
-        logger.warning("Database agent unavailable during startup: %s", type(exc).__name__)
+    except Exception:
+        logger.exception("Executive database agent unavailable during startup")
         database_agent = _UnseededDatabaseAgent()
         if db_query_client:
             await db_query_client.close()
@@ -251,8 +250,8 @@ async def build_shared_resources() -> SharedResources:
             data_role=Role.EMPLOYEE,
         )
         logger.info("Employee database agent initialized")
-    except Exception as exc:
-        logger.warning("Employee database agent unavailable during startup: %s", type(exc).__name__)
+    except Exception:
+        logger.exception("Employee database agent unavailable during startup")
         if employee_db_query_client:
             await employee_db_query_client.close()
         employee_db_query_client = None

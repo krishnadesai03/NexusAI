@@ -1,0 +1,195 @@
+{
+  "generated_at": "2026-10-11T22:27:49Z",
+  "method": "Production Router + RoutingDecision schema; downstream agents stubbed; temperature=0",
+  "models": [
+    {
+      "model": "gpt-4o-mini-2024-07-18",
+      "cases": 35,
+      "repeats": 3,
+      "tasks": 105,
+      "task_accuracy": 1.0,
+      "completion_rate": 1.0,
+      "schema_failure_rate": 0.0,
+      "micro_precision": 1.0,
+      "micro_recall": 1.0,
+      "micro_f1": 1.0,
+      "macro_f1": 1.0,
+      "over_routing_case_rate": 0.0,
+      "under_routing_case_rate": 0.0,
+      "label_metrics": {
+        "knowledge": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0,
+          "tp": 36,
+          "fp": 0,
+          "fn": 0
+        },
+        "performance": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0,
+          "tp": 39,
+          "fp": 0,
+          "fn": 0
+        },
+        "database": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0,
+          "tp": 42,
+          "fp": 0,
+          "fn": 0
+        },
+        "communication": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0,
+          "tp": 33,
+          "fp": 0,
+          "fn": 0
+        }
+      },
+      "latency_ms": {
+        "mean": 762.0456438095148,
+        "p50": 739.2749999999069,
+        "p95": 913.8087999999698
+      },
+      "streaming": {
+        "samples": 10,
+        "ttft_ms_mean": 512.1812999997019,
+        "ttft_ms_p50": 525.6363999992573,
+        "ttft_ms_p95": 649.7506999994584,
+        "tpot_ms_mean": 8.968876855654177,
+        "tokens_per_second_mean": 115.58335424093455
+      },
+      "tokens": {
+        "input": 53031,
+        "cached_input": 0,
+        "output": 4386,
+        "mean_per_task": 546.8285714285714
+      },
+      "cost_usd": 0.01058625,
+      "cost_per_task_usd": 0.00010082142857142858,
+      "cost_per_1000_tasks_usd": 0.10082142857142858,
+      "failures": [],
+      "errors": []
+    },
+    {
+      "model": "gpt-4.1-mini-2025-04-14",
+      "cases": 35,
+      "repeats": 3,
+      "tasks": 105,
+      "task_accuracy": 0.9714285714285714,
+      "completion_rate": 1.0,
+      "schema_failure_rate": 0.0,
+      "micro_precision": 1.0,
+      "micro_recall": 0.98,
+      "micro_f1": 0.98989898989899,
+      "macro_f1": 0.9891304347826086,
+      "over_routing_case_rate": 0.0,
+      "under_routing_case_rate": 0.02857142857142857,
+      "label_metrics": {
+        "knowledge": {
+          "precision": 1.0,
+          "recall": 0.9166666666666666,
+          "f1": 0.9565217391304348,
+          "tp": 33,
+          "fp": 0,
+          "fn": 3
+        },
+        "performance": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0,
+          "tp": 39,
+          "fp": 0,
+          "fn": 0
+        },
+        "database": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0,
+          "tp": 42,
+          "fp": 0,
+          "fn": 0
+        },
+        "communication": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0,
+          "tp": 33,
+          "fp": 0,
+          "fn": 0
+        }
+      },
+      "latency_ms": {
+        "mean": 659.6242523809841,
+        "p50": 654.3550999995205,
+        "p95": 821.6090000005352
+      },
+      "streaming": {
+        "samples": 10,
+        "ttft_ms_mean": 463.47933999995803,
+        "ttft_ms_p50": 465.8217000001059,
+        "ttft_ms_p95": 747.4174999997558,
+        "tpot_ms_mean": 8.402193111851746,
+        "tokens_per_second_mean": 159.45821595269325
+      },
+      "tokens": {
+        "input": 53031,
+        "cached_input": 0,
+        "output": 4423,
+        "mean_per_task": 547.1809523809524
+      },
+      "cost_usd": 0.0282892,
+      "cost_per_task_usd": 0.0002694209523809524,
+      "cost_per_1000_tasks_usd": 0.2694209523809524,
+      "failures": [],
+      "errors": [
+        {
+          "repeat": 1,
+          "case": "m10",
+          "expected": [
+            "knowledge",
+            "performance",
+            "database"
+          ],
+          "predicted": [
+            "performance",
+            "database"
+          ],
+          "exact": false
+        },
+        {
+          "repeat": 2,
+          "case": "m10",
+          "expected": [
+            "knowledge",
+            "performance",
+            "database"
+          ],
+          "predicted": [
+            "performance",
+            "database"
+          ],
+          "exact": false
+        },
+        {
+          "repeat": 3,
+          "case": "m10",
+          "expected": [
+            "knowledge",
+            "performance",
+            "database"
+          ],
+          "predicted": [
+            "performance",
+            "database"
+          ],
+          "exact": false
+        }
+      ]
+    }
+  ]
+}

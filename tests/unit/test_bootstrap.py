@@ -18,6 +18,6 @@ async def test_shared_resources_start_when_databases_are_unavailable(monkeypatch
     knowledge_result = await shared.knowledge_agent.handle("What is the PTO policy?")
     database_result = await shared.database_agent.handle("What is Priya's salary?")
     assert "temporarily unavailable" in knowledge_result.content
-    assert "hasn't been seeded" in database_result.content
+    assert "temporarily unavailable" in database_result.content
 
     await bootstrap.close_shared_resources(shared)
