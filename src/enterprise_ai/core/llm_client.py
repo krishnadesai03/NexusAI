@@ -99,3 +99,8 @@ def default_llm_client() -> LLMClient:
     """The LLMClient to use for real (non-test) calls in this environment."""
 
     return OpenAILLMClient()
+
+
+def default_router_llm_client() -> LLMClient:
+    """Router model is independently configurable because every request uses this one call."""
+    return OpenAILLMClient(model=os.environ.get("OPENAI_ROUTER_MODEL", "gpt-4.1-mini"))

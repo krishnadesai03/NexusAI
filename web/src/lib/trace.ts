@@ -35,7 +35,7 @@ export function applyTraceEvent(trace: Trace, event: TraceEvent): Trace {
       // Orchestrator.handle() actually fanned them out in, not an arbitrary/alphabetical one.
       return {
         ...trace,
-        reasoning: event.reasoning,
+        reasoning: event.intent === "business" ? `Business request → ${event.agents.join(", ")}` : event.intent,
         branches: event.agents.map((agent) => ({ agent, status: "running" as const, steps: [] })),
       };
 

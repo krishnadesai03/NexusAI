@@ -34,7 +34,7 @@ from enterprise_ai.agents.performance.agent import PerformanceAgent
 from enterprise_ai.access_policy import AccessContext, Role
 from enterprise_ai.core.agent import Agent, AgentResult, OnEvent
 from enterprise_ai.core.embedding_client import default_embedding_client
-from enterprise_ai.core.llm_client import LLMClient, default_llm_client
+from enterprise_ai.core.llm_client import LLMClient, default_llm_client, default_router_llm_client
 from enterprise_ai.core.tool_cache import ToolCache
 from enterprise_ai.integrations.atlassian.bitbucket_client import BitbucketClient
 from enterprise_ai.integrations.atlassian.mcp_client import AtlassianMCPSession, ConfluenceMCPClient, JiraMCPClient
@@ -263,7 +263,7 @@ async def build_shared_resources() -> SharedResources:
         communication_clients = None
 
     return SharedResources(
-        router=Router(llm_client),
+        router=Router(default_router_llm_client()),
         knowledge_agent=knowledge_agent,
         performance_agent=performance_agent,
         database_agent=database_agent,

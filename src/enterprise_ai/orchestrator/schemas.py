@@ -2,22 +2,24 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 AgentName = Literal["knowledge", "performance", "database", "communication"]
+Intent = Literal["business", "greeting", "system_help", "unsupported", "unsafe"]
 
 
 class RoutingDecision(BaseModel):
-    """The only shape a routing decision is allowed to take. Forcing the LLM's
-    output through this schema is the 'hard schema guardrail' from learnings.md #1:
-    it can reason about intent however it wants, but its answer must resolve to
-    one or more of these four fixed agent names."""
+    """One-call routing result with strict business/direct-response invariants."""
 
-    agents: list[AgentName] = Field(
-        min_length=1,
-        description="Every agent needed to fully answer the request. More than one "
-        "means the request should fan out to multiple agents in parallel.",
-    )
-    reasoning: str = Field(
-        description="Brief justification for the choice, kept for tracing/eval — not shown to the user."
-    )
+    intent: Intent
+    agents: list[AgentName] = Field(description="Business agents to call; empty for non-business intents.")
+    answer: str | None = Field(description="Direct answer for non-business intents; null for business requests.")
+
+    @model_validator(mode="after")
+    def validate_decision(self) -> RoutingDecision:
+        if self.intent == "business":
+            if not self.agents or self.answer is not None:
+                raise ValueError("business decisions require agents and answer=null")
+        elif self.agents or not self.answer or not self.answer.strip():
+            raise ValueError("non-business decisions require agents=[] and a non-empty answer")
+        return self

@@ -88,7 +88,7 @@ export interface ChatTurn {
 }
 
 export type TraceEvent =
-  | { type: "routing_decided"; agents: string[]; reasoning: string }
+  | { type: "routing_decided"; intent: string; agents: string[] }
   | { type: "agent_started"; agent: string }
   | { type: "agent_finished"; agent: string }
   | { type: "tool_called"; agent: string; tool: string; detail?: string }
