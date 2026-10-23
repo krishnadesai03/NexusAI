@@ -45,7 +45,17 @@ class Orchestrator:
         history_text = self._memory.as_text_summary()
 
         decision = await self._router.route(user_request, history_text=history_text)
-        emit_event(on_event, {"type": "routing_decided", "agents": list(decision.agents), "reasoning": decision.reasoning})
+        emit_event(on_event, {"type": "routing_decided", "intent": decision.intent, "agents": list(decision.agents)})
+
+        if decision.intent != "business":
+            direct_result = AgentResult(
+                agent_name="orchestrator",
+                content=decision.answer or "I couldn't produce a response.",
+                metadata={"intent": decision.intent, "citations": []},
+            )
+            results_by_name = {"orchestrator": direct_result}
+            self._memory.add_turn(user_request, results_by_name)
+            return OrchestratorResult(routed_to=[], results=results_by_name)
 
         unknown = [name for name in decision.agents if name not in self._agents]
         if unknown:

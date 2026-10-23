@@ -34,7 +34,7 @@ def _all_stub_agents():
 
 
 async def test_orchestrator_routes_to_single_agent():
-    decision = RoutingDecision(agents=["knowledge"], reasoning="docs question")
+    decision = RoutingDecision(intent="business", agents=["knowledge"], answer=None)
     orchestrator = Orchestrator(router=Router(FakeLLMClient(decision)), agents=_all_stub_agents())
 
     result = await orchestrator.handle("What's our PTO policy?")
@@ -43,8 +43,20 @@ async def test_orchestrator_routes_to_single_agent():
     assert result.results["knowledge"].content == "knowledge handled it"
 
 
+async def test_orchestrator_answers_non_business_intent_without_calling_agents():
+    decision = RoutingDecision(intent="greeting", agents=[], answer="Hello! How can I help?")
+    agents = _all_stub_agents()
+    orchestrator = Orchestrator(router=Router(FakeLLMClient(decision)), agents=agents)
+
+    result = await orchestrator.handle("Hi")
+
+    assert result.routed_to == []
+    assert result.results["orchestrator"].content == "Hello! How can I help?"
+    assert all(not agent.received_history for agent in agents.values())
+
+
 async def test_same_tool_cache_instance_is_reused_across_turns_in_one_session():
-    decision = RoutingDecision(agents=["knowledge"], reasoning="docs question")
+    decision = RoutingDecision(intent="business", agents=["knowledge"], answer=None)
     agents = _all_stub_agents()
     orchestrator = Orchestrator(router=Router(FakeLLMClient(decision)), agents=agents)
 
@@ -57,7 +69,7 @@ async def test_same_tool_cache_instance_is_reused_across_turns_in_one_session():
 
 
 async def test_two_orchestrators_get_independent_tool_caches():
-    decision = RoutingDecision(agents=["knowledge"], reasoning="docs question")
+    decision = RoutingDecision(intent="business", agents=["knowledge"], answer=None)
     agents_a = _all_stub_agents()
     agents_b = _all_stub_agents()
     orchestrator_a = Orchestrator(router=Router(FakeLLMClient(decision)), agents=agents_a)
@@ -70,7 +82,7 @@ async def test_two_orchestrators_get_independent_tool_caches():
 
 
 async def test_orchestrator_fans_out_to_multiple_agents():
-    decision = RoutingDecision(agents=["database", "knowledge"], reasoning="needs both")
+    decision = RoutingDecision(intent="business", agents=["database", "knowledge"], answer=None)
     orchestrator = Orchestrator(router=Router(FakeLLMClient(decision)), agents=_all_stub_agents())
 
     result = await orchestrator.handle("Compare last sprint's velocity to what the docs promised")
@@ -81,7 +93,7 @@ async def test_orchestrator_fans_out_to_multiple_agents():
 
 
 async def test_second_turn_receives_first_turns_history():
-    decision = RoutingDecision(agents=["knowledge"], reasoning="docs question")
+    decision = RoutingDecision(intent="business", agents=["knowledge"], answer=None)
     llm = FakeLLMClient(decision)
     agents = _all_stub_agents()
     orchestrator = Orchestrator(router=Router(llm), agents=agents)
@@ -101,7 +113,7 @@ async def test_second_turn_receives_first_turns_history():
 
 
 async def test_memory_window_keeps_only_last_five_turns():
-    decision = RoutingDecision(agents=["knowledge"], reasoning="docs question")
+    decision = RoutingDecision(intent="business", agents=["knowledge"], answer=None)
     llm = FakeLLMClient(decision)
     agents = _all_stub_agents()
     orchestrator = Orchestrator(router=Router(llm), agents=agents)
@@ -117,13 +129,13 @@ async def test_memory_window_keeps_only_last_five_turns():
 
 
 async def test_emits_routing_and_agent_lifecycle_events_for_single_agent():
-    decision = RoutingDecision(agents=["knowledge"], reasoning="docs question")
+    decision = RoutingDecision(intent="business", agents=["knowledge"], answer=None)
     orchestrator = Orchestrator(router=Router(FakeLLMClient(decision)), agents=_all_stub_agents())
     events: list[dict] = []
 
     await orchestrator.handle("What's our PTO policy?", on_event=events.append)
 
-    assert events[0] == {"type": "routing_decided", "agents": ["knowledge"], "reasoning": "docs question"}
+    assert events[0] == {"type": "routing_decided", "intent": "business", "agents": ["knowledge"]}
     assert {"type": "agent_started", "agent": "knowledge"} in events
     assert {"type": "agent_finished", "agent": "knowledge"} in events
     # started must precede finished for the same agent
@@ -133,7 +145,7 @@ async def test_emits_routing_and_agent_lifecycle_events_for_single_agent():
 
 
 async def test_emits_agent_lifecycle_events_for_every_agent_in_a_fan_out():
-    decision = RoutingDecision(agents=["database", "knowledge"], reasoning="needs both")
+    decision = RoutingDecision(intent="business", agents=["database", "knowledge"], answer=None)
     orchestrator = Orchestrator(router=Router(FakeLLMClient(decision)), agents=_all_stub_agents())
     events: list[dict] = []
 
@@ -146,7 +158,7 @@ async def test_emits_agent_lifecycle_events_for_every_agent_in_a_fan_out():
 
 
 async def test_no_events_emitted_when_on_event_is_omitted():
-    decision = RoutingDecision(agents=["knowledge"], reasoning="docs question")
+    decision = RoutingDecision(intent="business", agents=["knowledge"], answer=None)
     orchestrator = Orchestrator(router=Router(FakeLLMClient(decision)), agents=_all_stub_agents())
 
     # must not raise just because on_event wasn't passed — matches every existing caller

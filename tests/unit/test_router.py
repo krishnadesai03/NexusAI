@@ -21,7 +21,7 @@ class FakeLLMClient:
 
 
 async def test_route_single_agent():
-    decision = RoutingDecision(agents=["knowledge"], reasoning="docs question")
+    decision = RoutingDecision(intent="business", agents=["knowledge"], answer=None)
     router = Router(FakeLLMClient([decision]))
 
     result = await router.route("What's our PTO policy?")
@@ -30,7 +30,7 @@ async def test_route_single_agent():
 
 
 async def test_route_multi_agent_fan_out():
-    decision = RoutingDecision(agents=["database", "knowledge"], reasoning="needs both")
+    decision = RoutingDecision(intent="business", agents=["database", "knowledge"], answer=None)
     router = Router(FakeLLMClient([decision]))
 
     result = await router.route("Compare last sprint's velocity to what the docs promised")
@@ -38,20 +38,21 @@ async def test_route_multi_agent_fan_out():
     assert set(result.agents) == {"database", "knowledge"}
 
 
-async def test_route_retries_on_invalid_output_then_succeeds():
-    good_decision = RoutingDecision(agents=["performance"], reasoning="jira question")
-    router = Router(FakeLLMClient([ValueError("malformed tool call"), good_decision]), max_retries=2)
-
-    result = await router.route("How's the current sprint going?")
-
-    assert result.agents == ["performance"]
-
-
-async def test_route_raises_after_exhausting_retries():
-    router = Router(
-        FakeLLMClient([ValueError("bad"), ValueError("bad"), ValueError("bad")]),
-        max_retries=2,
-    )
+async def test_route_raises_after_one_invalid_output_without_retrying():
+    client = FakeLLMClient([ValueError("bad"), ValueError("must not be consumed")])
+    router = Router(client, max_retries=2)
 
     with pytest.raises(RoutingError):
         await router.route("anything")
+
+    assert len(client._responses) == 1
+
+
+def test_non_business_intent_strictly_rejects_agents():
+    with pytest.raises(ValueError, match="agents=\\[\\]"):
+        RoutingDecision(intent="greeting", agents=["knowledge"], answer="Hello!")
+
+
+def test_business_intent_requires_agents_and_blank_answer():
+    with pytest.raises(ValueError, match="require agents"):
+        RoutingDecision(intent="business", agents=[], answer="I'll answer directly")

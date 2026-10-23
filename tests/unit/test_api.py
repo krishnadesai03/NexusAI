@@ -225,7 +225,7 @@ class FakeLLMClient:
 
     async def get_structured_output(self, *, system_prompt, user_prompt, schema):
         self.history_seen.append(user_prompt)
-        return RoutingDecision(agents=self.route_to, reasoning="test")
+        return RoutingDecision(intent="business", agents=self.route_to, answer=None)
 
 
 class FakeAgent:

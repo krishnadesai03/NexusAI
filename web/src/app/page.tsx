@@ -18,18 +18,35 @@ const PERSONA_DETAILS: Record<string, { initials: string; label: string; access:
   },
 };
 
+// These two public demo profiles are product configuration, not runtime data. Rendering them
+// locally keeps a sleeping API host from blocking the landing page. The background request below
+// still starts warming the API before the visitor selects a profile.
+const DEMO_PERSONAS: DemoPersona[] = [
+  {
+    slug: "sofia-reyes",
+    display_name: "Sofia Reyes",
+    title: "Software Engineer",
+    role: "employee",
+    department: "Engineering",
+  },
+  {
+    slug: "matt-davidson",
+    display_name: "Matt Davidson",
+    title: "Chief Executive Officer",
+    role: "executive",
+    department: "Executive Office",
+  },
+];
+
 export default function LandingPage() {
   const router = useRouter();
-  const [personas, setPersonas] = useState<DemoPersona[]>([]);
-  const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    listDemoPersonas()
-      .then(setPersonas)
-      .catch((err: unknown) => setError(err instanceof ApiError ? err.message : "The demo service is unavailable. Please try again."))
-      .finally(() => setLoading(false));
+    // Do not await this request or surface a transient cold-start error on the landing page.
+    // Selecting a profile performs the authoritative API request and reports a real error.
+    void listDemoPersonas().catch(() => undefined);
   }, []);
 
   async function continueAs(persona: DemoPersona) {
@@ -67,9 +84,8 @@ export default function LandingPage() {
             <h2>Who would you like to explore as?</h2>
           </div>
           {error && <div className="landing-error" role="alert">{error}</div>}
-          {loading && <div className="persona-loading">Loading demo profiles…</div>}
           <div className="persona-grid">
-            {personas.map((persona) => {
+            {DEMO_PERSONAS.map((persona) => {
               const details = PERSONA_DETAILS[persona.role] ?? {
                 initials: persona.display_name.split(" ").map((part) => part[0]).join("").slice(0, 2),
                 label: `${persona.role} view`,
