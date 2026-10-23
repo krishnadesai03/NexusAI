@@ -5,6 +5,7 @@ import enterprise_ai.bootstrap as bootstrap
 
 async def test_shared_resources_start_when_databases_are_unavailable(monkeypatch) -> None:
     monkeypatch.setattr(bootstrap, "default_llm_client", lambda: object())
+    monkeypatch.setattr(bootstrap, "default_router_llm_client", lambda: object())
     monkeypatch.setattr(bootstrap, "default_embedding_client", lambda: object())
     monkeypatch.setattr(bootstrap, "_performance_state_file", lambda: None)
     monkeypatch.setattr(bootstrap.PgVectorStore, "connect", AsyncMock(side_effect=TimeoutError))
